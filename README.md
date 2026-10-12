@@ -3,6 +3,10 @@
 Measure **what YaRN actually buys you** on needle-in-a-haystack, on free-tier GPUs
 (Kaggle 2×T4 / Colab T4).
 
+> **Results report:** [`report/niah_yarn_report.html`](report/niah_yarn_report.html) —
+> results, charts, limitations and conclusions. It is generated from `evidence/` by
+> `tools/build_report.py`, so no number in it is typed by hand.
+
 ## The one design decision that makes this a real experiment
 
 The only thing that changes between arms is `rope_scaling`. Same weights, same
