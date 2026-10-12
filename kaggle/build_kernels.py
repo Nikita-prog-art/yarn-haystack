@@ -78,6 +78,7 @@ import collections
 import glob
 import importlib.metadata as md
 import os
+import shutil
 import subprocess
 import sys
 
@@ -142,9 +143,13 @@ def main():
 
     # 1. Harness at the pinned commit. Pinning matters: these numbers get compared
     #    against a later run, and "main moved" explains nothing.
-    if not os.path.isdir("yarn-haystack"):
-        sh(["git", "clone", "-q", REPO_URL, "yarn-haystack"])
-    os.chdir("yarn-haystack")
+    # Clone into scratch, not WORK: everything under WORK becomes the kernel's
+    # output, and shipping the entire git checkout (.git/hooks, FETCH_HEAD, config)
+    # next to two JSONLs is noise.
+    harness = os.path.join(scratch_dir(), "yarn-haystack")
+    if not os.path.isdir(harness):
+        sh(["git", "clone", "-q", REPO_URL, harness])
+    os.chdir(harness)
     sh(["git", "fetch", "-q", "--all"])
     sh(["git", "checkout", "-q", COMMIT])
     head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
@@ -202,6 +207,21 @@ def main():
     #    one case, not the session.
     results = os.path.join(WORK, "results")
     os.makedirs(results, exist_ok=True)
+
+    # Carry results over from previous runs, mounted as a dataset source. Without
+    # this the harness's resumable JSONL is dead code on Kaggle: every pushed
+    # version gets a fresh /kaggle/working, so run.py finds nothing to skip and
+    # recomputes every case - including the model download, twice per run, once per
+    # arm.
+    restored = []
+    for prior in sorted(glob.glob("/kaggle/input/*/results/*.jsonl") +
+                        glob.glob("/kaggle/input/*/*.jsonl")):
+        dest = os.path.join(results, os.path.basename(prior))
+        if not os.path.exists(dest):
+            shutil.copy(prior, dest)
+            restored.append(os.path.basename(prior))
+    print("restored from previous runs:", restored or "(nothing)")
+
     common = ["--model", MODEL, "--lengths", LENGTHS, "--depths", DEPTHS,
               "--max-new-tokens", str(MAX_NEW_TOKENS), *EXTRA]
     for arm, extra in (("base", []), ("yarn", ["--factor", "4", "--original-max", "32768"])):
@@ -247,7 +267,8 @@ def render(preset: dict, slug: str, commit: str, shape: str) -> str:
     return out
 
 
-def build(slug: str, preset: dict, commit: str, user: str, shape: str) -> str:
+def build(slug: str, preset: dict, commit: str, user: str, shape: str,
+          results_dataset: str = "") -> str:
     folder = os.path.join(HERE, slug)
     os.makedirs(folder, exist_ok=True)
 
@@ -267,7 +288,10 @@ def build(slug: str, preset: dict, commit: str, user: str, shape: str) -> str:
         "enable_tpu": "false",
         "enable_internet": "true",  # mandatory: model and corpus downloads
         "machine_shape": shape,     # NvidiaTeslaT4 == 2xT4, 32 GiB total
-        "dataset_sources": [], "competition_sources": [],
+        # Results from earlier runs live in this dataset so run.py can skip
+        # finished cases instead of recomputing them in a fresh container.
+        "dataset_sources": [results_dataset] if results_dataset else [],
+        "competition_sources": [],
         "kernel_sources": [], "model_sources": [],
     }
     with open(os.path.join(folder, "kernel-metadata.json"), "w", encoding="utf-8") as fh:
@@ -281,6 +305,9 @@ def main() -> None:
     ap.add_argument("--user", default="nikitaprogart", help="Kaggle username (metadata id)")
     ap.add_argument("--shape", default="NvidiaTeslaT4", choices=["NvidiaTeslaT4", "NvidiaTeslaP100"])
     ap.add_argument("--only", default=None, help="build a single preset")
+    ap.add_argument("--results-dataset", default="nikitaprogart/yarn-niah-results",
+                    help="Kaggle dataset holding results from earlier runs, mounted read-only "
+                         "at /kaggle/input so run.py can resume; empty string to disable")
     args = ap.parse_args()
 
     if len(args.commit) != 40:
@@ -291,7 +318,7 @@ def main() -> None:
     for slug, preset in PRESETS.items():
         if args.only and slug != args.only:
             continue
-        path = build(slug, preset, args.commit, args.user, args.shape)
+        path = build(slug, preset, args.commit, args.user, args.shape, args.results_dataset)
         print(f"built {slug:8s} -> {os.path.relpath(path)}")
 
 
