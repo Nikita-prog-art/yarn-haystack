@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Recover a kernel version's results from its log.
+#
+#   kaggle/from_log <owner/slug[/version]> [outdir]
+#
+# Needed because `kaggle kernels output` returns nothing for these runs while the
+# log endpoint works, so the log is the only transport that actually carries data
+# out of the container. See tools/log_to_results.py.
+set -uo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$HERE/.." && pwd)"
+TARGET="${1:?usage: kaggle/from_log <owner/slug[/version]> [outdir]}"
+OUTDIR="${2:-$REPO/.local/from-log}"
+RAW="$REPO/.local/from-log-raw.json"
+
+mkdir -p "$OUTDIR"
+echo "[from_log] fetching log for $TARGET"
+"$HERE/kg" kernels logs "$TARGET" > "$RAW" || true
+if [ ! -s "$RAW" ]; then
+  echo "[from_log] empty log (the endpoint is flaky; retry in a minute)"
+  exit 1
+fi
+python3 "$REPO/tools/log_to_results.py" --outdir "$OUTDIR" --arm "${ARM:-unknown}" < "$RAW"

@@ -245,6 +245,24 @@ def main():
     for path in found + sorted(glob.glob(os.path.join(report, "*"))):
         print("  ", path)
 
+    # The output endpoint is unusable for these runs: `kaggle kernels output` returns
+    # nothing, with or without --file-pattern and with explicit versions, while
+    # `kernels logs` works (when it answers at all - it is flaky too, so
+    # kaggle/from_log retries). Echo every row with a prefix and let
+    # tools/log_to_results.py rebuild the files: otherwise the measurements exist
+    # only inside a container that is already gone.
+    print("\\n===== NIAH_TRANSPORT_BEGIN =====")
+    for path in found:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                if line.strip():
+                    print("NIAH_ROW " + line.strip())
+    if os.path.exists(summary):
+        with open(summary, encoding="utf-8") as fh:
+            for line in fh:
+                print("NIAH_MD " + line.rstrip())
+    print("===== NIAH_TRANSPORT_END =====")
+
 
 if __name__ == "__main__":
     main()

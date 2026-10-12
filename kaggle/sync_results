@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Pull a finished kernel version's JSONL results into the shared dataset and
+# publish a new dataset version, so the next kernel run resumes instead of
+# recomputing.
+#
+#   kaggle/sync_results <owner/slug[/version]>
+#
+# The kernel scripts mount that dataset read-only at /kaggle/input and copy the
+# JSONLs into /kaggle/working/results before running, which is what makes run.py's
+# completed_keys() skip anything already measured. Without this step the dataset is
+# empty and every run starts from zero.
+set -uo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$HERE/.." && pwd)"
+TARGET="${1:?usage: kaggle/sync_results <owner/slug[/version]>}"
+OUT="$REPO/.local/kernel-out"
+DS="$REPO/.local/results-dataset"
+
+rm -rf "$OUT" && mkdir -p "$OUT" "$DS/results"
+
+# The output endpoint is flaky; retry rather than silently syncing nothing.
+for attempt in 1 2 3; do
+  echo "[sync] fetching output (attempt $attempt)"
+  "$HERE/kg" kernels output "$TARGET" -p "$OUT" >/dev/null 2>&1 || true
+  n=$(find "$OUT" -name "*.jsonl" | wc -l)
+  [ "$n" -gt 0 ] && break
+  sleep 20
+done
+
+found=$(find "$OUT" -name "*.jsonl" | wc -l)
+if [ "$found" -eq 0 ]; then
+  echo "[sync] no JSONL results for $TARGET - nothing to publish"
+  echo "[sync] (a failed kernel run persists no output files at all)"
+  exit 1
+fi
+
+addressed=0
+while IFS= read -r f; do
+  base=$(basename "$f")
+  if [ -s "$DS/results/$base" ] && [ "$DS/results/$base" -nt "$f" ]; then
+    continue
+  fi
+  cp "$f" "$DS/results/$base"
+  echoed=1
+  addressed=$((addressed + 1))
+  echo "[sync]   $base  ($(wc -l < "$f") rows)"
+done < <(find "$OUT" -name "*.jsonl")
+
+total=$(find "$DS/results" -name "*.jsonl" | wc -l)
+rows=$(cat "$DS"/results/*.jsonl 2>/dev/null | wc -l)
+echo "[sync] dataset now holds $total file(s), $rows rows"
+
+if [ "${addressed:-0}" -eq 0 ] && [ -n "${echoed:-}" ]; then
+  echo "[sync] nothing new to publish"
+  exit 0
+fi
+
+"$HERE/kg" datasets version -p "$DS" -m "results from $TARGET" --dir-mode zip 2>&1 | tail -3
