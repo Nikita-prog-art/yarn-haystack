@@ -3,3 +3,5 @@ cache/
 results/
 report/
 *.jsonl
+.local/
+.kaggle/
