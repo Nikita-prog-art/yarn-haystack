@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Wrapper for the Kaggle CLI in this repo.
+#
+# Why it exists: `uvx kaggle` needs writable UV_CACHE_DIR / UV_TOOL_DIR, and the
+# CLI needs a writable credential location. In this environment /tmp does NOT
+# survive between commands and $HOME is read-only, so everything points inside the
+# repo. .local/ and .kaggle/ are gitignored, so a token placed here cannot be
+# committed.
+#
+# Accepted credential formats (either one):
+#   .kaggle/kaggle.json    {"username": "...", "key": "..."}   - classic API token
+#   .kaggle/access_token   <token string>                      - newer token format
+#
+# OAuth (`kaggle auth login`) is NOT usable here: it stores credentials at the
+# hardcoded ~/.kaggle/credentials.json, and $HOME is read-only in this sandbox.
+#
+# Usage: kaggle/kg kernels list --mine
+set -euo pipefail
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export UV_CACHE_DIR="$REPO/.local/uv-cache"
+export UV_TOOL_DIR="$REPO/.local/uv-tools"
+export UV_TOOL_BIN_DIR="$REPO/.local/uv-tools/bin"
+export KAGGLE_CONFIG_DIR="$REPO/.kaggle"
+
+# The CLI reads KAGGLE_API_TOKEN from the environment, but looks for an
+# access_token FILE only at the hardcoded ~/.kaggle/access_token. Lift the value
+# from the repo copy so the file-based form works too.
+if [ -z "${KAGGLE_API_TOKEN:-}" ] && [ -s "$KAGGLE_CONFIG_DIR/access_token" ]; then
+  export KAGGLE_API_TOKEN="$(tr -d '\r\n' < "$KAGGLE_CONFIG_DIR/access_token")"
+fi
+
+if [ -x "$UV_TOOL_BIN_DIR/kaggle" ]; then
+  exec "$UV_TOOL_BIN_DIR/kaggle" "$@"
+fi
+mkdir -p "$UV_CACHE_DIR" "$UV_TOOL_DIR"
+exec uvx kaggle "$@"

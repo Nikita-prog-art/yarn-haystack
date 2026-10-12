@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Kaggle-side preflight: is a usable credential in place, and does the API answer?
+#
+#   kaggle/doctor
+#
+# Needs phone verification on the Kaggle account for GPU kernels, and internet
+# enabled in the kernel for the model and corpus downloads. Neither is checkable
+# from the CLI, so both are stated rather than tested.
+set -uo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$HERE/.." && pwd)"
+CFG="$REPO/.kaggle"
+
+echo "config dir: $CFG"
+found=""
+[ -s "$CFG/kaggle.json" ]    && found="kaggle.json (username+key)"
+[ -s "$CFG/access_token" ]   && found="${found:+$found + }access_token (token string)"
+if [ -z "$found" ]; then
+  cat <<'MSG'
+NO CREDENTIALS.
+
+Put ONE of these in place (both are gitignored):
+
+  classic API token, from kaggle.com -> Settings -> API -> Create New Token:
+      cp ~/Downloads/kaggle.json ~/projects/yarn-haystack/.kaggle/kaggle.json
+
+  or the newer token string:
+      echo 'PASTE_TOKEN_HERE' > ~/projects/yarn-haystack/.kaggle/access_token
+
+OAuth (kaggle auth login) cannot work here: it writes the hardcoded
+~/.kaggle/credentials.json and $HOME is read-only in this sandbox.
+MSG
+  exit 1
+fi
+echo "credential found: $found"
+chmod 600 "$CFG"/* 2>/dev/null || true
+
+echo
+echo "calling the API (kernels list --mine)..."
+if "$HERE/kg" kernels list --mine --page-size 1 2>&1 | tail -20; then
+  echo
+  echo "AUTH OK"
+else
+  echo
+  echo "AUTH FAILED - see the message above"
+  exit 1
+fi
