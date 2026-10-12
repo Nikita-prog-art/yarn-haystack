@@ -1,0 +1,13 @@
+# Core deps. Kaggle/Colab already ship a CUDA-matched torch — do NOT reinstall it.
+# >=4.51 is required for Qwen3: older versions silently ignore
+# original_max_position_embeddings inside rope_scaling.
+transformers>=4.51
+accelerate
+datasets
+bitsandbytes          # only needed for --load-in-4bit on a 16GB T4
+matplotlib
+numpy
+huggingface_hub
+# optional, big win at long context but a fragile install:
+#   vllm
+#   flash-attn

@@ -1,0 +1,124 @@
+# yarn-haystack
+
+Measure **what YaRN actually buys you** on needle-in-a-haystack, on free-tier GPUs
+(Kaggle 2×T4 / Colab T4).
+
+## The one design decision that makes this a real experiment
+
+The only thing that changes between arms is `rope_scaling`. Same weights, same
+tokenizer, same haystack sentence order, same needle offset, greedy decoding.
+Anything else and you are measuring two differences at once.
+
+| arm | `rope_scaling` | what it means |
+|---|---|---|
+| `base` | none | native RoPE of the checkpoint (Qwen2.5: 32k, `rope_theta=1e6`) |
+| `yarn` | `{type: yarn, factor: 4, original_max_position_embeddings: 32768}` | 131k effective |
+| `linear` | `{type: linear, ...}` | cheap reference point |
+| `dynamic` | `{type: dynamic, ...}` | NTK-by-parts reference point |
+
+`base` is the interesting arm, not a throwaway: at 64k/128k it is *pure
+extrapolation* past the trained window. The YaRN effect is exactly
+`yarn@128k − base@128k`, and `yarn@4k − base@4k` is the price you pay in
+short-context quality. Both numbers matter; only reporting the first is how
+people fool themselves.
+
+> Why Qwen2.5 / Qwen3 and not the newest Qwen: **the ablation needs the model to
+> actually fail without YaRN.** Anything natively long-context has no failure for
+> YaRN to fix at ≤128k, so the "effect" you measure is zero by construction — the
+> worst possible outcome, because it looks like a clean negative result. The
+> shipped configs, verified against the Hub:
+
+| model | `rope_scaling` in config | trained prompt window | KV @128k, fp16 | usable here? |
+|---|---|---|---|---|
+| Qwen2.5-7B-Instruct | none | 32768 | 7.0 GiB (56 KiB/tok) | **yes** — cheapest path to a number |
+| Qwen2.5-3B-Instruct | none | 32768 | 4.5 GiB | yes, fp16 on one T4 |
+| **Qwen3-8B** | **none** | **32768** (config says 40960) | **18.0 GiB (144 KiB/tok)** | yes, but needs 2×T4 at 128k |
+| Qwen3-1.7B / 0.6B | none | 32768 (config 40960) | 14.0 GiB | yes, tight on one T4 |
+| Qwen3-4B-Instruct-2507 | none | 262144 | 18.0 GiB | **no** — inside window |
+| Qwen3.5-0.8B … 397B | none | 262144 | ~4–8 GiB (hybrid linear attn) | **no** — inside window |
+| Qwen3-Next-80B, Qwen3-Coder | none | 262144 | — | **no** — inside window |
+
+Two things worth knowing before you pick a model, both from Qwen's own cards:
+
+1. **Qwen3's config says `max_position_embeddings: 40960`, but the card says
+   "32,768 natively and 131,072 tokens with YaRN"** — the extra 8192 is output
+   space reserved out of the same budget. The official YaRN recipe is
+   `factor: 4.0, original_max_position_embeddings: 32768`. Copying 40960 out of
+   `config.json` (the obvious thing to do) builds `inv_freq` over positions the
+   model never trained on. `run.py` blocks exactly this.
+2. **Static YaRN is static**: the card states it "remains constant regardless of
+   input length, **potentially impacting performance on shorter texts**". So the
+   `yarn@4k − base@4k` delta is a documented, expected cost — measure it, don't
+   be surprised by it. Qwen's guidance is to match the factor to the target
+   (2.0 for 64k), which makes a cheap `factor ∈ {2, 3, 4}` sweep a natural second
+   axis at the same prefill cost.
+
+Switching models is one line (`MODEL` in the notebook); the protocol is unchanged.
+
+### Guardrails, because the failure mode is a plausible-looking wrong number
+
+`run.py` refuses to start (before downloading weights) when the setup cannot
+answer the question: a natively-256k model, `original_max` not matching the
+documented prompt window, a `base` arm that never leaves the trained window, or
+a test length beyond `original_max × factor`. `--force` overrides. See
+`test_logic.py` for the cases.
+
+## Quickstart
+
+```bash
+pip install -r requirements.txt
+
+# smoke first — the harness raises if rope_scaling did not actually stick
+python run.py --model Qwen/Qwen2.5-1.5B-Instruct --arm yarn --factor 4 \
+  --original-max 32768 --lengths 8192 --depths 0.5 --max-new-tokens 24 \
+  --out results/smoke.jsonl
+
+python run.py --model Qwen/Qwen2.5-7B-Instruct --arm base --load-in-4bit \
+  --lengths 4096,8192,16384,32768,65536,131072 --out results/base.jsonl
+python run.py --model Qwen/Qwen2.5-7B-Instruct --arm yarn --factor 4 --original-max 32768 --load-in-4bit \
+  --lengths 4096,8192,16384,32768,65536,131072 --out results/yarn_f4.jsonl
+
+python analyze.py results/*.jsonl --outdir report   # summary.md + heatmaps.png + CSVs
+```
+
+Or open `yarn_niah.ipynb` and run it top to bottom on Kaggle/Colab.
+
+## Cost
+
+Grid = 6 lengths × 7 depths × 1 needle = 42 cases per arm; 2 arms = 84 generations.
+
+| model | prefill for the whole 2-arm grid | footprint @128k | verdict on one T4 |
+|---|---|---|---|
+| Qwen2.5-1.5B | ~6 min of T4 FLOPs | 6.3 GiB fp16 | yes |
+| Qwen2.5-3B | ~13 min | 10.3 GiB fp16 | yes |
+| Qwen2.5-7B | ~33 min | 11.3 GiB (NF4 + KV) | yes, with `--load-in-4bit` |
+| Qwen3-8B | ~36 min | 22.2 GiB (NF4 + KV) | **no** → 64k only, or 2×T4 |
+| Qwen3-1.7B | ~9 min | 14.9 GiB (NF4 + KV) | tight |
+
+Compute is not the binding constraint — memory is, and Qwen3's 144 KiB/token KV
+cache is what makes "take a newer Qwen" cost more than it looks at a glance.
+Naive HF decoding at 128k is the other tax; `--backend vllm --tensor-parallel-size 2`
+on Kaggle's two T4s removes both problems if vLLM installs cleanly (see `SETUP.md`).
+
+## Files
+
+| file | role |
+|---|---|
+| `niah.py` | corpus, case construction, deterministic scoring, arm/config wiring, sanity guards, generation, resumable JSONL writer |
+| `run.py` | CLI for one arm |
+| `analyze.py` | JSONL → `summary.md` + `heatmaps.png` + CSVs, incl. the YaRN delta table |
+| `test_logic.py` | torch-free tests: needle placement, scoring, resume, sanity guards, thinking handling |
+| `yarn_niah.ipynb` | Kaggle/Colab driver |
+| `SETUP.md` | platform specifics, session-splitting plan, install risks |
+
+## Validity checklist
+
+- `--load-in-4bit`, `--dtype`, `--attn`, `--prompt-style`, `--enable-thinking` must be **identical across arms**.
+- `--depths` must be the same string for both arms; depths are fractions of the haystack, which is what makes them comparable across lengths.
+- 1 needle × 1 depth is not a result, it is an anecdote. Report the full depth×length heatmap; NIAH failure is usually depth-localised (lost-in-the-middle), not uniform.
+- Answers are checked at word boundaries, so `7391` does not match inside `173910`.
+- The answer is taken from **after** the last thinking block. An answer the model only considered internally is not a hit — otherwise Qwen3's default reasoning mode inflates every score.
+- Qwen3 needs `transformers>=4.51`; older versions silently drop `original_max_position_embeddings` from `rope_scaling`, turning the treatment arm into a copy of the control.
+- Empty/truncated preds from a killed session are visible in the JSONL, not silently scored as 0 — filter on `ts` if in doubt.
+- Run `python test_logic.py` before a GPU session. It is one second and it catches the failures above.
+
