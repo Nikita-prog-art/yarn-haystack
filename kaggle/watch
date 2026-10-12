@@ -39,22 +39,39 @@ while :; do
   fi
   if [ -n "$slug" ] && terminal "$slug"; then
     echo "[watch] finished as ${slug} after ${elapsed}m"
-    echo "[watch] ---- log ----"
-    "$HERE/kg" kernels logs "$TARGET" > /dev/null 2>&1 || true
-    "$HERE/kg" kernels logs "$TARGET" 2>/dev/null | python3 - <<'PY'
-import json, sys
-raw = sys.stdin.read().strip()
-try:
-    entries = json.loads(raw)
-except Exception:
-    print(raw[:4000] if raw else "(empty log)")
+    echo "[watch] ---- results ----"
+    # The log endpoint is flaky and a single fetch usually returns nothing, so let
+    # from_log retry and parse. It also means the notification carries the numbers
+    # instead of an empty section.
+    OUTDIR="$REPO/.local/from-log-$(date +%s)"
+    if "$HERE/from_log" "$TARGET" "$OUTDIR" 2>&1 | tail -8; then
+      python3 - "$OUTDIR" <<'PY'
+import collections, glob, json, os, sys
+d = sys.argv[1]
+rows = []
+for path in glob.glob(os.path.join(d, "*.jsonl")):
+    for line in open(path, encoding="utf-8"):
+        if line.strip():
+            try:
+                rows.append(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+if not rows:
+    print("[watch] no rows recovered")
     raise SystemExit
-for e in entries:
-    d = e.get("data", "").rstrip()
-    if not d or "it/s]" in d or d.startswith("   ━") or "examples/s" in d:
-        continue
-    print(f"[{e['time']:7.1f}s {e['stream_name'][:3]}] {d[:200]}")
+agg = collections.defaultdict(lambda: [0, 0])
+for r in rows:
+    key = (r.get("arm") or "?", r.get("length"))
+    agg[key][1] += 1
+    agg[key][0] += bool(r.get("correct_word"))
+print(f"[watch] recovered {len(rows)} row(s)")
+for (arm, length), (ok, n) in sorted(agg.items(), key=lambda kv: (str(kv[0][0]), kv[0][1] or 0)):
+    pct = 100.0 * ok / n if n else 0.0
+    print(f"[watch]   {arm:<6} L={str(length):>7}: {ok}/{n}  ({pct:.0f}%)")
 PY
+    else
+      echo "[watch] from_log could not recover results"
+    fi
     case "$slug" in
       *COMPLETE*) exit 0 ;;
       *) exit 1 ;;
