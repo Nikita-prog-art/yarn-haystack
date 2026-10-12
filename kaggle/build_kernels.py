@@ -226,7 +226,9 @@ def build(slug: str, preset: dict, commit: str, user: str, shape: str) -> str:
         json.dump(nb, fh, ensure_ascii=False, indent=1)
 
     meta = {
-        "id": f"{user}/{slug}", "title": preset["title"],
+        # Kernel slugs are global per user, so prefix them: "smoke" alone is a
+        # collision waiting to happen.
+        "id": f"{user}/yarn-niah-{slug}", "title": preset["title"],
         "code_file": f"{slug}.ipynb", "language": "python", "kernel_type": "notebook",
         "is_private": "true",          # a half-finished run is not for the world
         "enable_gpu": "true",
