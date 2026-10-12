@@ -33,6 +33,17 @@ class CharTokenizer:
         return "".join(m["content"] for m in msgs) + "<|assistant|>"
 
 
+def cell_source(cell: dict) -> str:
+    """Cell source regardless of whether it is stored as a string or a line list."""
+    src = cell["source"]
+    return src if isinstance(src, str) else "".join(src)
+
+
+def find_code_cell(nb: dict, prefix: str) -> dict:
+    return next(c for c in nb["cells"]
+                if c["cell_type"] == "code" and cell_source(c).lstrip().startswith(prefix))
+
+
 def test_sanity_guards() -> None:
     """The guards must block configurations that cannot measure YaRN."""
     import argparse
@@ -101,8 +112,8 @@ def test_notebook_install_cell() -> None:
 
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "yarn_niah.ipynb")
     nb = json.load(open(path, encoding="utf-8"))
-    cell = next(c for c in nb["cells"] if c["cell_type"] == "code" and c["source"][0].startswith("# 2) Install"))
-    src = "\n".join(cell["source"])
+    cell = find_code_cell(nb, "# 2) Install")
+    src = cell_source(cell)
 
     def run_cell(start_env, still_old_after_pip=False):
         env = dict(start_env)
@@ -194,10 +205,12 @@ def test_notebook_runner_cell() -> None:
 
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "yarn_niah.ipynb")
     nb = json.load(open(path, encoding="utf-8"))
-    cell = next(c for c in nb["cells"] if c["cell_type"] == "code"
-                and c["source"] and c["source"][0].startswith("import subprocess, sys, os"))
-    src = "\n".join(cell["source"])
-    src = src[: src.index("\n# ")]  # drop the cell's own niah(...) invocation
+    cell = find_code_cell(nb, "import subprocess, sys, os")
+    src = cell_source(cell)
+    # In the kernel notebooks the runner cell also carries its own niah(...) call;
+    # in the interactive one the runner is standalone. Drop the call if present.
+    if "\n# " in src:
+        src = src[: src.index("\n# ")]
     # Drop the cell's `import subprocess` too: it would rebind the name and defeat
     # the fake below (which is how this test first failed, by running run.py for real).
     src = "\n".join(ln for ln in src.split("\n") if not ln.startswith("import subprocess"))
@@ -243,6 +256,45 @@ def test_notebook_runner_cell() -> None:
     # -u: without it the child's stdout is block-buffered through the pipe and a
     # long 128k run looks frozen.
     assert "-u" in seen["cmd"], f"child must run unbuffered: {seen['cmd']}"
+
+
+def test_notebooks_are_not_glued() -> None:
+    """Every notebook cell must survive nbformat's "" concatenation.
+
+    Regression guard for a silent bug that cost a real kernel run: cells were
+    stored as line lists whose elements had lost their trailing newline, so readers
+    glued them. A cell beginning with a comment then became one long comment - it
+    still parsed, the kernel reported COMPLETE, and nothing had run.
+
+    The earlier version of this check compiled "\\n".join(...), which is not what
+    nbformat readers do, so it passed while every notebook was broken. Join the way
+    the consumer does.
+    """
+    import json
+
+    root = os.path.dirname(os.path.abspath(__file__))
+    paths = []
+    for dirpath, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in (".local", ".git", "__pycache__")]
+        paths += [os.path.join(dirpath, f) for f in files if f.endswith(".ipynb")]
+    assert paths, "no notebooks found to check"
+
+    for path in sorted(paths):
+        nb = json.load(open(path, encoding="utf-8"))
+        rel = os.path.relpath(path, root)
+        for i, cell in enumerate(nb.get("cells", [])):
+            src = cell.get("source")
+            if isinstance(src, list):
+                assert len(src) <= 1 or all(s.endswith("\n") for s in src[:-1]), (
+                    f"{rel} cell {i}: list source would be glued by nbformat - "
+                    "store source as a single string (tools/normalize_notebooks.py)"
+                )
+                src = "".join(src)
+            if cell.get("cell_type") == "code":
+                try:
+                    compile(src, f"{rel}:{i}", "exec")
+                except SyntaxError as exc:
+                    raise AssertionError(f"{rel} cell {i} does not compile: {exc}") from exc
 
 
 def main() -> None:
@@ -297,6 +349,7 @@ def main() -> None:
     test_notebook_install_cell()
     test_placement()
     test_notebook_runner_cell()
+    test_notebooks_are_not_glued()
 
     print("ALL LOGIC TESTS PASSED")
 

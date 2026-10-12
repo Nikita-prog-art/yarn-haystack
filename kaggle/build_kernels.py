@@ -189,11 +189,11 @@ for root, _dirs, files in os.walk("results"):
 
 def code(src: str) -> dict:
     return {"cell_type": "code", "execution_count": None, "metadata": {},
-            "outputs": [], "source": src.strip("\n").split("\n")}
+            "outputs": [], "source": src.strip("\n")}
 
 
 def markdown(src: str) -> dict:
-    return {"cell_type": "markdown", "metadata": {}, "source": src.strip("\n").split("\n")}
+    return {"cell_type": "markdown", "metadata": {}, "source": src.strip("\n")}
 
 
 def build(slug: str, preset: dict, commit: str, user: str, shape: str) -> str:
