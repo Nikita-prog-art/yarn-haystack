@@ -1,0 +1,16 @@
+{
+  "id": "nikitaprogart/yarn-niah-probe-tpu",
+  "title": "yarn-niah-probe-tpu",
+  "code_file": "probe_tpu.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": "true",
+  "enable_gpu": "false",
+  "enable_tpu": "false",
+  "enable_internet": "true",
+  "machine_shape": "Tpu1VmV38",
+  "dataset_sources": [],
+  "competition_sources": [],
+  "kernel_sources": [],
+  "model_sources": []
+}

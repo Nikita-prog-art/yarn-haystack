@@ -158,6 +158,58 @@ flag (0.76 GiB at 64k vs 7.24 GiB for math at 8k), and the prefill must be chunk
 to 2048 at 131k because the per-chunk mask, not the activations, is what sets the
 bound (32768 x 98304 x 2 = 6.00 GiB was the failing allocation).
 
+### wave1b — past the native window, Qwen2.5-7B (64k and 128k)
+
+This is the wave the whole setup was built for. The model's native window is 32768,
+so at 64k and 128k it is operating outside anything it was trained on and the
+treatment has something to repair:
+
+| arm | 64k | 128k | mean |
+|---|---|---|---|
+| base (shipped config, extrapolating) | 2/3 | **1/3** | 50.0% |
+| yarn (factor 4.0, original_max 32768) | 3/3 | **3/3** | 100.0% |
+| delta | +33.3 pp | **+66.7 pp** | +50.0 pp |
+
+The failures are not scattered, which is why three samples per cell still says
+something. Broken down by needle depth:
+
+| arm | length | 0.1 | 0.5 | 0.9 |
+|---|---|---|---|---|
+| base | 64k | **fail** | ok | ok |
+| base | 128k | **fail** | **fail** | ok |
+| yarn | 64k | ok | ok | ok |
+| yarn | 128k | ok | ok | ok |
+
+Depth 0.9 places the needle nearest the end of the haystack, i.e. closest to the
+question. `base` fails exactly the needles that are far away, and fails more of them
+as the context grows — the signature of distance-based rotary extrapolation decay,
+not of a model that got unlucky. YaRN rescales the frequencies so the relative
+distances stay inside the trained range, and retrieval goes flat.
+
+Look at the full heatmap rather than the means: `evidence/final_report/heatmaps.png`
+shows the two red cells in the base panel and a solid green panel for YaRN. The
+unmeasured depths in the 64k/128k columns (0.25, 0.75, 1.0) are white — wave1b
+deliberately spent its budget on three depths at two long lengths rather than seven
+depths, because the interesting contrast is length, not mid-depth resolution.
+
+Three caveats, stated plainly:
+
+- **n=3 per cell.** The direction is consistent across two models (1.5B in the smoke
+  run, 7B here) and monotone in both distance and length, but this is not an effect
+  size. Read it as "the failure is real and YaRN removes it", not "YaRN is worth 67
+  points".
+- **4-bit quantization.** Both arms used the same `--load-in-4bit`, so the comparison
+  is controlled, but the absolute base-arm numbers would likely be somewhat higher in
+  bf16. Quantization makes long-context retrieval harder, so it may amplify the gap.
+- **Only `rope_scaling` differs.** Verified in the log: the base arm reports
+  `rope={'rope_theta': 1000000.0, 'rope_type': 'default'}` and the yarn arm reports
+  `rope={'rope_theta': 1000000.0, 'rope_type': 'yarn', 'factor': 4.0,
+  'original_max_position_embeddings': 32768, 'beta_fast': 32.0, 'beta_slow': 1.0}`,
+  same model, same dtype, same attention, same chunking.
+
+Raw rows: `evidence/wave1b_long_context.json`, consolidated report over all 68 rows
+in `evidence/final_report/` (heatmaps, per-length CSV, `summary.md`).
+
 ## Validity checklist
 
 - `--load-in-4bit`, `--dtype`, `--attn`, `--prompt-style`, `--enable-thinking` must be **identical across arms**.
@@ -167,5 +219,6 @@ bound (32768 x 98304 x 2 = 6.00 GiB was the failing allocation).
 - The answer is taken from **after** the last thinking block. An answer the model only considered internally is not a hit — otherwise Qwen3's default reasoning mode inflates every score.
 - Qwen3 needs `transformers>=4.51`; older versions silently drop `original_max_position_embeddings` from `rope_scaling`, turning the treatment arm into a copy of the control.
 - Empty/truncated preds from a killed session are visible in the JSONL, not silently scored as 0 — filter on `ts` if in doubt.
+- Recovered rows are cross-checked across transports when both work. The wave1b run was recovered twice — from `NIAH_ROW` lines in the kernel log and from the kernel output endpoint — and the two agreed on all 12 rows and every field. When only the log path works, the case-line parser is a lossy fallback: it only sees the truncated prediction, and it silently dropped rows whose `repr()`-quoted prediction switched to double quotes, which biased the score upward (fixed, with a regression test in `test_log_to_results_parser`).
 - Run `python test_logic.py` before a GPU session. It is one second and it catches the failures above.
 

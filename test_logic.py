@@ -580,6 +580,13 @@ def test_log_to_results_parser() -> None:
     emit("========================================================================\n== ARM base")
     emit("    [OK ] L=  4096 d=0.5  san_francisco  exp='eat a sandwich' pred='The best thing to do'")
     emit("    [MISS] L=131072 d=0.9  berlin         exp='7391' pred='cannot find it'")
+    # repr() switches to double quotes when the prediction contains an apostrophe.
+    # Matching only single quotes silently dropped these rows, and because a hedged
+    # wrong answer is exactly the kind that contains "doesn't"/"it's", the loss
+    # biased the recovered score upward. Regression for the wave1b recovery, where
+    # the two missing rows were precisely the two base-arm failures.
+    emit('    [MISS] L=131072 d=0.1  san_francisco  exp=\'eat a sandwich\' pred="it doesn\'t seem that San Francisco "')
+    emit('    [MISS] L=131072 d=0.5  san_francisco  exp=\'eat a sandwich\' pred="it\'s not clear what the best thing "')
     emit("== ARM yarn")
     emit("    [OK ] L=131072 d=0.9  berlin         exp='7391' pred='the number is 7391'")
     # the structured path takes precedence when present
@@ -606,10 +613,14 @@ def test_log_to_results_parser() -> None:
 
         base = rows("base_from_log.jsonl")
         yarn = rows("yarn_from_log.jsonl")
-        assert len(base) == 2, [r["length"] for r in base]
+        assert len(base) == 4, [r["length"] for r in base]
         assert {r["length"] for r in base} == {4096, 131072}, base
         assert all(r["arm"] == "base" for r in base), base
-        assert [r["correct_word"] for r in base] == [True, False], base
+        by_len = sorted(base, key=lambda r: (r["length"], r["depth"]))
+        assert [r["correct_word"] for r in by_len] == [True, False, False, False], by_len
+        # the two double-quoted rows must survive with their text intact, not just be counted
+        hedged = [r for r in base if "doesn't" in r["prediction"] or "it's" in r["prediction"]]
+        assert len(hedged) == 2, hedged
 
         # yarn's case line lands in the arm file ...
         assert len(yarn) == 1, yarn

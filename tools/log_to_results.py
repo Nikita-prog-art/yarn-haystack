@@ -36,9 +36,15 @@ FILE_PREFIX = "NIAH_FILE "
 # produced one anonymous file.
 ARM_RE = re.compile(r"^== ARM (\w+)")
 
+# The quotes around exp/pred are whatever repr() picked, so a prediction containing
+# an apostrophe ("doesn't", "it's") comes out double-quoted. Matching only single
+# quotes silently dropped exactly those rows - and since a pred with an apostrophe is
+# disproportionately often a hedged, wrong answer, the loss biased scores *upward*.
+# Matched by backreference instead of a literal quote.
 CASE_RE = re.compile(
     r"\[(?P<flag>OK |MISS)\]\s+L=\s*(?P<length>\d+)\s+d=(?P<depth>[\d.]+)\s+"
-    r"(?P<needle>\S+)\s+exp='(?P<expected>.*?)'\s+pred='(?P<pred>.*)'\s*$"
+    r"(?P<needle>\S+)\s+exp=(?P<expected_q>['\"])(?P<expected>.*?)(?P=expected_q)\s+"
+    r"pred=(?P<pred_q>['\"])(?P<pred>.*)(?P=pred_q)\s*$"
 )
 
 
