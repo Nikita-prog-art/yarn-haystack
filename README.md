@@ -128,6 +128,29 @@ evidence, not evidence of absence.
 
 Raw rows and the full environment are in `evidence/smoke_v8_first_measurement.json`.
 
+### wave1a — short contexts, Qwen2.5-7B (4k to 32k, 7 depths each)
+
+| arm | 4k | 8k | 16k | 32k |
+|---|---|---|---|---|
+| base (shipped config) | 7/7 | 7/7 | 7/7 | 7/7 |
+| yarn (factor 4.0) | 7/7 | 7/7 | 7/7 | 7/7 |
+
+No penalty at any length - but read this as a **ceiling effect, not a free lunch**.
+Both arms are perfect at every depth, so NIAH at these lengths has no headroom to
+show a degradation a 7B model would have to be near a boundary to exhibit. Qwen's
+own card warns that static YaRN "may potentially degrade model performance" on short
+texts; that claim is not refutable or confirmable with a task the model already
+saturates. Perplexity or a knowledge benchmark would be the instrument for it.
+
+Two runs produced this number, not one: the first ran only the yarn arm because an
+over-strict sanity check refused the base arm, and the second did not restore the
+first's rows as intended (the results dataset version was still being created when
+the kernel was pushed). Correctness was unaffected - `run.py` skips only whole cases
+it has already written - but it is why the pair took 17 + 32 minutes instead of ~35
+for the pair or ~17 with a working carry-over.
+
+Raw rows: `evidence/wave1a_short_context.json`, report in `evidence/wave1a_report/`.
+
 Running this at all on a 14.6 GiB T4 required three separate memory fixes, each
 measured rather than guessed - see `attention_setup.py` and `SETUP.md`:
 attention must use the memory-efficient kernel with K/V expanded instead of the GQA

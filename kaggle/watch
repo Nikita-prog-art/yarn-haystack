@@ -10,6 +10,7 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$HERE/.." && pwd)"
 TARGET="${1:?usage: kaggle/watch <owner/slug[/version]> [max_minutes]}"
 MAXMIN="${2:-240}"
 INTERVAL=60
