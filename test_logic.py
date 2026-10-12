@@ -463,6 +463,59 @@ def test_attention_setup() -> None:
     assert sdpa_mod.use_gqa_in_sdpa(None, None, None) is False, "the GQA flag was not disabled"
 
 
+def test_no_undefined_names() -> None:
+    """Names used inside the main functions must actually resolve.
+
+    This is a poor man's pyflakes, and it exists because a NameError cost a real
+    kernel run: `attention_setup` was imported inside load_model_and_tokenizer but
+    used in run(), which is only reachable 90 seconds into a GPU session.
+    """
+    import ast
+    import builtins
+
+    root = os.path.dirname(os.path.abspath(__file__))
+    tree = ast.parse(open(os.path.join(root, "niah.py"), encoding="utf-8").read())
+
+    module_names = set(dir(builtins))
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                module_names.add((alias.asname or alias.name).split(".")[0])
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            module_names.add(node.name)
+        elif isinstance(node, ast.Assign):
+            module_names.update(t.id for t in node.targets if isinstance(t, ast.Name))
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            module_names.add(node.target.id)
+
+    def unknown_in(fn_name: str) -> set[str]:
+        fn = next((n for n in tree.body
+                   if isinstance(n, ast.FunctionDef) and n.name == fn_name), None)
+        if fn is None:
+            return set()
+        local = {a.arg for a in fn.args.args} | {a.arg for a in fn.args.kwonlyargs}
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+                local.add(node.id)
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                local.update((a.asname or a.name).split(".")[0] for a in node.names)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                local.add(node.name)
+            elif isinstance(node, ast.ExceptHandler) and node.name:
+                local.add(node.name)
+            elif isinstance(node, ast.comprehension) and isinstance(node.target, ast.Name):
+                local.add(node.target.id)
+        return {n.id for n in ast.walk(fn)
+                if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+                and n.id not in local and n.id not in module_names}
+
+    bad = {fn: sorted(unknown_in(fn))
+           for fn in ("run", "load_model_and_tokenizer", "load_vllm", "generate_hf",
+                      "generate_vllm", "build_single_case", "build_multi_case")}
+    bad = {k: v for k, v in bad.items() if v}
+    assert not bad, f"names that would raise NameError at runtime: {bad}"
+
+
 def main() -> None:
     tok = CharTokenizer()
     corpus_ids = tok("The quarterly report mentions ordinary logistics. " * 3000)["input_ids"]
@@ -516,6 +569,7 @@ def main() -> None:
     test_rope_scaling_shapes()
     test_kernel_scripts()
     test_attention_setup()
+    test_no_undefined_names()
 
     print("ALL LOGIC TESTS PASSED")
 

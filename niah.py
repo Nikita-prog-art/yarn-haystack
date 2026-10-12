@@ -28,6 +28,8 @@ import time
 from dataclasses import asdict, dataclass
 from typing import Any
 
+import attention_setup  # sibling module; torch is imported lazily inside it
+
 # --------------------------------------------------------------------------
 # Needles. Each needle must contain a unique, non-guessable answer string so a
 # "hit" cannot come from world knowledge or from a neighbouring needle.
@@ -546,8 +548,6 @@ def load_model_and_tokenizer(args):
     # On sm<80 the GQA flag forces the math backend, which OOMs at long context;
     # this picks usable kernels and, where needed, expands K/V instead. See
     # attention_setup's docstring for the measured numbers.
-    import attention_setup
-
     attention_setup.configure_attention(allow_math=True, verbose=True)
 
     applied = getattr(model.config, "rope_scaling", None)
