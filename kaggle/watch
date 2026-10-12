@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Wait for a Kaggle kernel version to finish, then print its log.
+#
+#   kaggle/watch <owner/slug[/version]> [max_minutes]
+#
+# Exists because polling by hand in the foreground wastes turns: start this as a
+# background job and you get told when there is actually something to read.
+# Exits non-zero on ERROR/CANCEL so the caller cannot mistake a failed run for a
+# successful one.
+set -uo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TARGET="${1:?usage: kaggle/watch <owner/slug[/version]> [max_minutes]}"
+MAXMIN="${2:-240}"
+INTERVAL=60
+
+# Status slugs observed from the CLI look like KernelWorkerStatus.RUNNING.
+terminal() {
+  case "$1" in
+    *COMPLETE*|*ERROR*|*CANCEL*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+start=$(date +%s)
+last=""
+while :; do
+  now=$(date +%s)
+  elapsed=$(( (now - start) / 60 ))
+  if [ "$elapsed" -ge "$MAXMIN" ]; then
+    echo "[watch] gave up after ${MAXMIN}m; last status: ${last:-unknown}"
+    exit 2
+  fi
+  st=$("$HERE/kg" kernels status "$TARGET" 2>&1 | tail -1)
+  slug=$(printf '%s' "$st" | grep -o '"[^"]*"$' | tr -d '"')
+  if [ "$slug" != "$last" ]; then
+    echo "[watch] ${elapsed}m: ${slug:-$st}"
+    last="$slug"
+  fi
+  if [ -n "$slug" ] && terminal "$slug"; then
+    echo "[watch] finished as ${slug} after ${elapsed}m"
+    echo "[watch] ---- log ----"
+    "$HERE/kg" kernels logs "$TARGET" > /dev/null 2>&1 || true
+    "$HERE/kg" kernels logs "$TARGET" 2>/dev/null | python3 - <<'PY'
+import json, sys
+raw = sys.stdin.read().strip()
+try:
+    entries = json.loads(raw)
+except Exception:
+    print(raw[:4000] if raw else "(empty log)")
+    raise SystemExit
+for e in entries:
+    d = e.get("data", "").rstrip()
+    if not d or "it/s]" in d or d.startswith("   ━") or "examples/s" in d:
+        continue
+    print(f"[{e['time']:7.1f}s {e['stream_name'][:3]}] {d[:200]}")
+PY
+    case "$slug" in
+      *COMPLETE*) exit 0 ;;
+      *) exit 1 ;;
+    esac
+  fi
+  sleep "$INTERVAL"
+done
