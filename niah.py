@@ -430,11 +430,17 @@ def sanity_check(args, cfg) -> None:
             "model was TRAINED on, which is not always the config value."
         )
 
-    # 4. No contrast: everything inside the native window, so YaRN is a no-op.
+    # 4. Nothing outside the window: no extrapolation is exercised. This is NOT an
+    #    error. Comparing base against yarn entirely inside the window is exactly how
+    #    you measure the price of static YaRN on short contexts - the effect Qwen's
+    #    own model card warns about - and refusing it made wave1a's base arm die while
+    #    its yarn arm ran, quietly halving a two-arm comparison. Advise, do not block.
+    notes: list[str] = []
     if args.arm == "base" and native and longest <= native:
-        problems.append(
-            f"arm=base with longest length {longest} <= native window {native}: no extrapolation is exercised, "
-            "so there is nothing for the YaRN arm to differ from."
+        notes.append(
+            f"arm=base with longest length {longest} <= native window {native}: no extrapolation is "
+            "exercised, so this run measures the in-window cost of scaling rather than its benefit. "
+            "That is a legitimate experiment; just do not read it as a YaRN win."
         )
 
     print(f"[info] native window={native}  original_max={args.original_max}  factor={args.factor}  "
@@ -443,6 +449,8 @@ def sanity_check(args, cfg) -> None:
         print(f"[note] original_max ({args.original_max}) != config max_position_embeddings ({native}). Expected for "
               "Qwen3 (config reserves 40960 = 32768 prompt + 8192 output, and the official YaRN recipe uses 32768) — "
               "but it is exactly the trap worth double-checking.")
+    for n in notes:
+        print(f"[note] {n}")
     for p in problems:
         print(f"[WARN] {p}")
     if problems and not getattr(args, "force", False):

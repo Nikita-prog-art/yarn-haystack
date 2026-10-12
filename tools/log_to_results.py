@@ -27,6 +27,7 @@ import sys
 
 ROW_PREFIX = "NIAH_ROW "
 MD_PREFIX = "NIAH_MD "
+FILE_PREFIX = "NIAH_FILE "
 
 # [OK ] L=  4096 d=0.25 san_francisco  exp='eat a sandwich' pred='The best...'
 # The kernel scripts print "== ARM base" / "== ARM yarn" before each arm, and case
@@ -64,6 +65,7 @@ def parse(lines, arm: str | None = None) -> tuple[dict[str, list[dict]], list[st
     rows: dict[str, list[dict]] = {}
     markdown: list[str] = []
     current = arm
+    current_file: str | None = None
     for line in lines:
         marker = ARM_RE.search(line.strip())
         if marker:
@@ -72,13 +74,17 @@ def parse(lines, arm: str | None = None) -> tuple[dict[str, list[dict]], list[st
         if line.startswith(MD_PREFIX):
             markdown.append(line[len(MD_PREFIX):])
             continue
+        if line.startswith(FILE_PREFIX):
+            current_file = line[len(FILE_PREFIX):].strip()
+            continue
         if line.startswith(ROW_PREFIX):
             payload = line[len(ROW_PREFIX):]
             try:
                 row = json.loads(payload)
             except json.JSONDecodeError:
                 continue
-            key = f"{row.get('arm', 'unknown')}_{row.get('slug', row.get('mode', 'run'))}.jsonl"
+            key = (current_file
+                   or f"{row.get('arm', 'unknown')}_{row.get('slug', row.get('mode', 'run'))}.jsonl")
             rows.setdefault(key, []).append(row)
             continue
         m = CASE_RE.search(line)

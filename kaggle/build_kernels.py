@@ -253,6 +253,10 @@ def main():
     # only inside a container that is already gone.
     print("\\n===== NIAH_TRANSPORT_BEGIN =====")
     for path in found:
+        # Name the file before its rows: rows do not carry the preset slug, so without
+        # this the rebuilt file is named from `mode` and run.py's resume logic - which
+        # only reads its own --out path - would not find them.
+        print("NIAH_FILE " + os.path.basename(path))
         with open(path, encoding="utf-8") as fh:
             for line in fh:
                 if line.strip():

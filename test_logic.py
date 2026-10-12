@@ -76,7 +76,10 @@ def test_sanity_guards() -> None:
         ("naive copy of config 40960", mk(original_max=40960), 40960, "BLOCK", "documented prompt window"),
         ("Qwen3.5 native 256k", mk(model="Qwen/Qwen3.5-4B"), 262144, "BLOCK", "INSIDE the trained window"),
         ("Qwen3 2507 long-context", mk(model="Qwen/Qwen3-4B-Instruct-2507"), 262144, "BLOCK", "INSIDE"),
-        ("base arm inside window", mk(arm="base", lengths="4096,8192"), 40960, "BLOCK", "no extrapolation is exercised"),
+        # Advisory, not fatal: comparing base against yarn entirely inside the window
+        # is how the short-context cost of static YaRN gets measured. Refusing it
+        # killed wave1a's base arm while its yarn arm ran, halving the comparison.
+        ("base arm inside window", mk(arm="base", lengths="4096,8192"), 40960, "ALLOW", "legitimate experiment"),
         ("base arm past window", mk(arm="base"), 40960, "ALLOW", None),
         ("factor too small for 128k", mk(factor=2.0), 40960, "BLOCK", "exceeds the scaled range"),
         ("Qwen2.5-7B recipe", mk(model="Qwen/Qwen2.5-7B-Instruct"), 32768, "ALLOW", None),
