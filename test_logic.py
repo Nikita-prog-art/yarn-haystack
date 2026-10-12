@@ -542,6 +542,15 @@ def test_prefill_chunking() -> None:
     # a bigger model must not get a bigger chunk
     assert attention_setup.auto_prefill_chunk_size(Qwen2_5_7B) <= chunk
 
+    # At long context the explicit per-chunk mask dominates: q != kv during chunked
+    # prefill, so transformers materialises q x kv. chunk=32768 against 98304 keys
+    # is exactly the 6.00 GiB allocation that OOMed on the T4.
+    long_chunk = attention_setup.auto_prefill_chunk_size(Qwen2_5_1_5B, 131072)
+    assert long_chunk < chunk, (long_chunk, chunk)
+    mask_gib = long_chunk * 131072 * 2 / 2 ** 30
+    assert mask_gib < 0.8, mask_gib
+    assert 32768 * 98304 * 2 / 2 ** 30 > 5.9   # the observed failure, for the record
+
     # configs without the sizes must yield None rather than a bogus number
     assert attention_setup.bytes_per_token_activations(object()) == 0
     assert attention_setup.auto_prefill_chunk_size(object()) is None

@@ -164,20 +164,30 @@ def bytes_per_token_activations(config) -> int:
     return int(3 * inter * 2 + 2 * hidden * 2)
 
 
-def auto_prefill_chunk_size(config, budget_gib: float = 2.5) -> int | None:
-    """A chunk size that keeps per-layer activations inside `budget_gib`.
+def auto_prefill_chunk_size(config, longest_length: int = 0, budget_gib: float = 2.5,
+                            mask_budget_gib: float = 0.75) -> int | None:
+    """A chunk size bounded by BOTH activation memory and the per-chunk mask.
 
     transformers v5 chunks the prefill when `generation_config.prefill_chunk_size`
-    is set, which bounds every intermediate tensor to `chunk` rows instead of the
-    whole context. Returns None when the config does not expose the sizes needed.
+    is set, which bounds every intermediate to `chunk` rows instead of the whole
+    context. But two different tensors have to fit:
+
+    * activations - gate/up/product at `chunk` rows, roughly `budget_gib`;
+    * the attention mask - during chunked prefill q != kv, so transformers cannot
+      pass is_causal and instead materialises an explicit q x kv mask. With
+      chunk=32768 against 98304 keys that is exactly 32768*98304*2 = 6.00 GiB, which
+      is the allocation that failed. Mask cost grows with the context, so it, not
+      the activations, is what sets the chunk at long lengths.
     """
     per_token = bytes_per_token_activations(config)
     if not per_token:
         return None
-    chunk = int(budget_gib * 2 ** 30 / per_token)
-    # Round down to a power of two, and never below a useful minimum.
-    power = 1 << max(9, chunk.bit_length() - 1)
-    return max(512, min(power, 32768))
+    limits = [int(budget_gib * 2 ** 30 / per_token)]
+    if longest_length:
+        limits.append(int(mask_budget_gib * 2 ** 30 / (2 * longest_length)))
+    chunk = max(512, min(limits))
+    # Round down to a power of two.
+    return max(512, min(1 << max(9, chunk.bit_length() - 1), 32768))
 
 
 def configure_prefill_chunking(model, requested: int | None, lengths: list[int],
@@ -205,7 +215,7 @@ def configure_prefill_chunking(model, requested: int | None, lengths: list[int],
         return int(requested)
 
     longest = max(lengths) if lengths else 0
-    chunk = auto_prefill_chunk_size(model.config)
+    chunk = auto_prefill_chunk_size(model.config, longest)
     if chunk is None or not longest or chunk >= longest:
         return None
     gen_cfg.prefill_chunk_size = chunk
