@@ -319,20 +319,67 @@ def score_multi(prediction: str, expected: str) -> dict[str, Any]:
 # --------------------------------------------------------------------------
 
 
-def rope_scaling_for(arm: str, factor: float, omax: int, attn_factor: float | None, beta_fast: float, beta_slow: float):
+def rope_scaling_for(
+    arm: str,
+    factor: float,
+    omax: int,
+    attn_factor: float | None,
+    beta_fast: float,
+    beta_slow: float,
+    existing: dict | None = None,
+) -> dict | None:
+    """Build the RoPE scaling entry for `arm`, or None for the untouched default.
+
+    Two transformers generations have to be satisfied, and the difference is not
+    cosmetic:
+
+    * v4 keeps `rope_theta` as its own config attribute and `rope_scaling` as a
+      sibling dict. A `rope_theta` key inside `rope_scaling` only earns an
+      "unrecognized keys" warning there, so it is omitted when `existing` is None.
+    * v5 merged both into one `rope_parameters` dict (`rope_scaling` is now just a
+      property alias over it) and its scaling functions read `rope_theta` from
+      INSIDE that dict. So the entry must be merged into the existing dict, not
+      replace it: replacing drops `rope_theta`, and the model then dies inside
+      Qwen2RotaryEmbedding with a KeyError that names neither RoPE nor the config.
+
+    `rope_type` is used for the discriminator because v4.45+ and v5 both accept it,
+    whereas v5 dropped the old `type` spelling.
+    """
     if arm == "base":
         return None
-    cfg: dict[str, Any] = {
-        "type": arm,
+    entry: dict[str, Any] = {
+        "rope_type": arm,
         "factor": factor,
         "original_max_position_embeddings": omax,
     }
     if arm == "yarn":
         if attn_factor is not None:
-            cfg["attention_factor"] = attn_factor
-        cfg["beta_fast"] = beta_fast
-        cfg["beta_slow"] = beta_slow
-    return cfg
+            entry["attention_factor"] = attn_factor
+        entry["beta_fast"] = beta_fast
+        entry["beta_slow"] = beta_slow
+    if existing:
+        merged = dict(existing)
+        merged.update(entry)
+        return merged
+    return entry
+
+
+def apply_rope_scaling(cfg, rs: dict | None) -> str:
+    """Install `rs` on the config in the shape this transformers version expects.
+
+    Returns "v5" or "v4". Factored out and unit-tested because this is exactly
+    where the rename bit us: assigning None to `rope_scaling` on v5 clears
+    `rope_parameters`, which also carries `rope_theta`.
+    """
+    v5 = hasattr(cfg, "rope_parameters")
+    if rs is None:
+        if not v5:
+            cfg.rope_scaling = None
+    elif v5:
+        cfg.rope_parameters = rs
+    else:
+        cfg.rope_scaling = rs
+    return "v5" if v5 else "v4"
 
 
 def sanity_check(args, cfg) -> None:
@@ -403,6 +450,14 @@ def sanity_check(args, cfg) -> None:
         )
 
 
+def tf_version() -> str:
+    try:
+        import transformers
+        return transformers.__version__
+    except Exception:  # noqa: BLE001
+        return "?"
+
+
 def resolve_placement(load_in_4bit: bool, device_map: str | None, dtype_name: str, cuda_available: bool) -> tuple[str | None, str, str | None]:
     """Decide where the model runs and in what precision.
 
@@ -438,17 +493,16 @@ def load_model_and_tokenizer(args):
         tok.pad_token_id = tok.eos_token_id
 
     cfg = AutoConfig.from_pretrained(args.model, trust_remote_code=args.trust_remote_code)
-    rs = rope_scaling_for(args.arm, args.factor, args.original_max, args.attention_factor, args.beta_fast, args.beta_slow)
     # Fail before the multi-GB weight download, not after.
     sanity_check(args, cfg)
 
-    # CRITICAL: rope_scaling must be set on the config BEFORE the model is built,
-    # otherwise the rotary embedding module is constructed with the old inv_freq
-    # and the flag is silently a no-op.
-    if rs is not None:
-        cfg.rope_scaling = rs
-    else:
-        cfg.rope_scaling = None
+    # CRITICAL: the scaling must be on the config BEFORE the model is built,
+    # otherwise the rotary embedding is constructed with the old inv_freq and the
+    # flag is a silent no-op.
+    existing = getattr(cfg, "rope_parameters", None) if hasattr(cfg, "rope_parameters") else None
+    rs = rope_scaling_for(args.arm, args.factor, args.original_max, args.attention_factor,
+                          args.beta_fast, args.beta_slow, existing)
+    fam = apply_rope_scaling(cfg, rs)
     if getattr(cfg, "use_sliding_window", False) and getattr(cfg, "sliding_window", None):
         # A sliding window would silently truncate attention and make a long-context
         # comparison meaningless.
@@ -491,13 +545,17 @@ def load_model_and_tokenizer(args):
     print(f"[info] device={where} dtype={dtype_name}")
 
     applied = getattr(model.config, "rope_scaling", None)
-    print(f"[info] arm={args.arm} rope_scaling={applied} rope_theta={getattr(model.config, 'rope_theta', None)} "
+    print(f"[info] transformers={tf_version()} ({fam}) arm={args.arm} rope={applied} "
           f"max_position_embeddings={model.config.max_position_embeddings}")
-    if rs is not None and applied != rs:
-        raise RuntimeError(
-            f"rope_scaling was not applied: requested {rs}, model reports {applied}. "
-            "Refusing to run — this would silently measure the wrong thing."
-        )
+    if rs is not None:
+        # Compare the discriminator, not the whole dict: v5 may normalise keys.
+        got = (applied or {}).get("rope_type") or (applied or {}).get("type")
+        if got != args.arm:
+            raise RuntimeError(
+                f"rope scaling was not applied: requested rope_type={args.arm!r}, model reports "
+                f"{got!r} (full entry: {applied}). Refusing to run - this would silently measure "
+                "the wrong thing."
+            )
     return model, tok
 
 

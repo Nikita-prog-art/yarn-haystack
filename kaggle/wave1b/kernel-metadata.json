@@ -1,9 +1,9 @@
 {
   "id": "nikitaprogart/yarn-niah-wave1b",
   "title": "yarn-niah wave1b long",
-  "code_file": "wave1b.ipynb",
+  "code_file": "wave1b.py",
   "language": "python",
-  "kernel_type": "notebook",
+  "kernel_type": "script",
   "is_private": "true",
   "enable_gpu": "true",
   "enable_tpu": "false",

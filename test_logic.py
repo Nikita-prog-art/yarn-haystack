@@ -297,6 +297,104 @@ def test_notebooks_are_not_glued() -> None:
                     raise AssertionError(f"{rel} cell {i} does not compile: {exc}") from exc
 
 
+def test_rope_scaling_shapes() -> None:
+    """Both transformers generations must get the shape they expect.
+
+    v4: rope_theta is a sibling attribute, rope_scaling a separate dict.
+    v5: one rope_parameters dict holds rope_theta AND the scheme, and the scaling
+    functions read rope_theta from inside it - so the entry must be MERGED, not
+    replaced. Replacing it made Qwen2RotaryEmbedding die with a KeyError that
+    mentions neither RoPE nor the config.
+    """
+    # base means "leave the shipped default alone"
+    assert niah.rope_scaling_for("base", 4, 32768, None, 32, 1) is None
+    assert niah.rope_scaling_for("base", 4, 32768, None, 32, 1, {"rope_theta": 1e6}) is None
+
+    # v4 shape: no rope_theta inside the scaling dict
+    rs4 = niah.rope_scaling_for("yarn", 4, 32768, None, 32, 1)
+    assert rs4 == {"rope_type": "yarn", "factor": 4,
+                   "original_max_position_embeddings": 32768,
+                   "beta_fast": 32, "beta_slow": 1}, rs4
+    assert "rope_theta" not in rs4
+    assert "beta_fast" not in niah.rope_scaling_for("linear", 4, 32768, None, 32, 1)
+
+    # v5 shape: merged into the existing dict, rope_theta preserved
+    existing = {"rope_theta": 1_000_000.0, "rope_type": "default"}
+    rs5 = niah.rope_scaling_for("yarn", 4, 32768, None, 32, 1, existing)
+    assert rs5["rope_theta"] == 1_000_000.0, rs5
+    assert rs5["rope_type"] == "yarn", rs5
+    assert existing["rope_type"] == "default", "the original dict must not be mutated"
+
+    # applying it: the three cases that differ between the generations
+    class V4:
+        rope_theta = 1e6
+        rope_scaling = {"type": "default"}
+
+    class V5:
+        rope_parameters = {"rope_theta": 1e6, "rope_type": "default"}
+
+    c = V4()
+    assert niah.apply_rope_scaling(c, None) == "v4" and c.rope_scaling is None
+    c = V4()
+    assert niah.apply_rope_scaling(c, rs4) == "v4" and c.rope_scaling == rs4
+
+    c = V5()
+    assert niah.apply_rope_scaling(c, None) == "v5"
+    # the bug: v5 must keep rope_theta when the base arm "clears" scaling
+    assert c.rope_parameters == {"rope_theta": 1e6, "rope_type": "default"}, c.rope_parameters
+    c = V5()
+    assert niah.apply_rope_scaling(c, rs5) == "v5"
+    assert c.rope_parameters["rope_theta"] == 1e6, c.rope_parameters
+    assert c.rope_parameters["rope_type"] == "yarn", c.rope_parameters
+
+
+def test_kernel_scripts() -> None:
+    """The generated Kaggle scripts must be pushable and self-consistent.
+
+    Guards the switch from notebooks to `kernel_type: "script"`: a stale metadata
+    block would silently push a notebook that no longer exists, or a script whose
+    pinned commit does not match the one it claims in its docstring.
+    """
+    import json
+    import re
+
+    root = os.path.dirname(os.path.abspath(__file__))
+    folders = [d for d in sorted(os.listdir(os.path.join(root, "kaggle")))
+               if os.path.isdir(os.path.join(root, "kaggle", d)) and not d.startswith("_")]
+    assert folders, "no kernel folders generated - run kaggle/build_kernels.py"
+
+    for slug in folders:
+        folder = os.path.join(root, "kaggle", slug)
+        meta_path = os.path.join(folder, "kernel-metadata.json")
+        assert os.path.exists(meta_path), f"{slug}: missing kernel-metadata.json"
+        meta = json.load(open(meta_path, encoding="utf-8"))
+
+        assert meta["kernel_type"] == "script", f"{slug}: expected a script kernel, got {meta['kernel_type']}"
+        assert meta["id"].endswith("/yarn-niah-" + slug), meta["id"]
+        assert meta["machine_shape"] in ("NvidiaTeslaT4", "NvidiaTeslaP100"), meta["machine_shape"]
+        assert meta["enable_gpu"] == "true" and meta["enable_internet"] == "true", (
+            f"{slug}: GPU and internet are both required"
+        )
+
+        script = os.path.join(folder, meta["code_file"])
+        assert os.path.exists(script), f"{slug}: code_file {meta['code_file']} does not exist"
+        src = open(script, encoding="utf-8").read()
+        try:
+            compile(src, script, "exec")
+        except SyntaxError as exc:
+            raise AssertionError(f"{slug}: generated script does not compile: {exc}") from exc
+
+        assert "@@" not in src, f"{slug}: unsubstituted template token left in the script"
+        commit = re.search(r'^COMMIT = "([a-f0-9]{40})"$', src, flags=re.M)
+        assert commit, f"{slug}: no pinned commit found"
+        assert commit.group(1) in src, f"{slug}: commit not referenced"
+
+        # Both arms, same grid: the ablation is worthless otherwise.
+        assert '("base", [])' in src and '"yarn"' in src, f"{slug}: both arms must run"
+        for flag in ("--lengths", "--depths", "--model"):
+            assert flag in src, f"{slug}: missing {flag}"
+
+
 def main() -> None:
     tok = CharTokenizer()
     corpus_ids = tok("The quarterly report mentions ordinary logistics. " * 3000)["input_ids"]
@@ -328,10 +426,7 @@ def main() -> None:
     assert sm["correct_word"] is False
 
     # --- rope_scaling wiring ---------------------------------------------
-    assert niah.rope_scaling_for("base", 4, 32768, None, 32, 1) is None
-    rs = niah.rope_scaling_for("yarn", 4, 32768, None, 32, 1)
-    assert rs == {"type": "yarn", "factor": 4, "original_max_position_embeddings": 32768, "beta_fast": 32, "beta_slow": 1}, rs
-    assert "beta_fast" not in niah.rope_scaling_for("linear", 4, 32768, None, 32, 1)
+
 
     # --- resumable writer -------------------------------------------------
     with tempfile.TemporaryDirectory() as td:
@@ -350,6 +445,8 @@ def main() -> None:
     test_placement()
     test_notebook_runner_cell()
     test_notebooks_are_not_glued()
+    test_rope_scaling_shapes()
+    test_kernel_scripts()
 
     print("ALL LOGIC TESTS PASSED")
 

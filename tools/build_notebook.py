@@ -8,8 +8,10 @@ became one long comment - it still parsed and the kernel reported COMPLETE, whil
 running nothing at all. Generating it means the format is right by construction,
 and test_logic.py now fails if it ever is not.
 
-Shared cell bodies (install, preflight, report) are imported from the kernel
-builder so the two drivers cannot drift apart.
+Shared cell bodies (install, preflight) live in tools/cells/ as plain text
+fragments. Storing them as Python string literals was tried and is a trap: cell
+text contains escape sequences like \n, and a second round of parsing turns them
+into real newlines that break the f-string.
 
     python tools/build_notebook.py
 """
@@ -20,9 +22,13 @@ import os
 import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(REPO, "kaggle"))
+CELLS = os.path.join(REPO, "tools", "cells")
 
-import build_kernels as bk  # noqa: E402  (path set above)
+
+def cell_file(name: str) -> str:
+    """Read a cell fragment, dropping its "this is not a module" header."""
+    text = open(os.path.join(CELLS, name + ".py"), encoding="utf-8").read()
+    return text.split("\n\n", 1)[1] if text.startswith("# Notebook cell fragment") else text
 
 # --------------------------------------------------------------------------
 # Cells unique to the interactive notebook. Its runner differs from the kernel's
@@ -178,9 +184,9 @@ def build() -> str:
         "cells": [
             markdown(MD_HEADER),
             code(CELL_CLONE),
-            code(bk.CELL_INSTALL),
+            code(cell_file("install")),
             code(CELL_CONFIG),
-            code(bk.CELL_PREFLIGHT),
+            code(cell_file("preflight")),
             code(CELL_RUNNER),
             code(CELL_SMOKE),
             code(CELL_BASE),

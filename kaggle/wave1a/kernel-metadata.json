@@ -1,9 +1,9 @@
 {
   "id": "nikitaprogart/yarn-niah-wave1a",
   "title": "yarn-niah wave1a short",
-  "code_file": "wave1a.ipynb",
+  "code_file": "wave1a.py",
   "language": "python",
-  "kernel_type": "notebook",
+  "kernel_type": "script",
   "is_private": "true",
   "enable_gpu": "true",
   "enable_tpu": "false",

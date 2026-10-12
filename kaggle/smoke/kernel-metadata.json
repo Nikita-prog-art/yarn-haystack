@@ -1,9 +1,9 @@
 {
   "id": "nikitaprogart/yarn-niah-smoke",
   "title": "yarn-niah smoke",
-  "code_file": "smoke.ipynb",
+  "code_file": "smoke.py",
   "language": "python",
-  "kernel_type": "notebook",
+  "kernel_type": "script",
   "is_private": "true",
   "enable_gpu": "true",
   "enable_tpu": "false",

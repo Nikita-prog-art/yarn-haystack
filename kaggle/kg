@@ -23,6 +23,17 @@ export UV_TOOL_DIR="$REPO/.local/uv-tools"
 export UV_TOOL_BIN_DIR="$REPO/.local/uv-tools/bin"
 export KAGGLE_CONFIG_DIR="$REPO/.kaggle"
 
+# The Kaggle logs endpoint is unreachable directly from this network: plain GETs
+# to kaggle.com succeed, but `kernels logs` hangs until timeout (verified side by
+# side). An optional proxy fixes it, so honor one if configured. The file is
+# gitignored; do not commit a proxy URL.
+PROXY_FILE="$REPO/.local/proxy"
+if [ -z "${HTTPS_PROXY:-}" ] && [ -s "$PROXY_FILE" ]; then
+  export HTTPS_PROXY="$(tr -d '\r\n' < "$PROXY_FILE")"
+  export HTTP_PROXY="$HTTPS_PROXY"
+  export ALL_PROXY="$HTTPS_PROXY"
+fi
+
 # The CLI reads KAGGLE_API_TOKEN from the environment, but looks for an
 # access_token FILE only at the hardcoded ~/.kaggle/access_token. Lift the value
 # from the repo copy so the file-based form works too.
