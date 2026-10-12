@@ -206,6 +206,30 @@ The two causes that have nothing to do with the harness:
 Both are checked up front by the notebook's `PREFLIGHT` cell. Run it before the
 smoke test whenever a session misbehaves.
 
+## Colab CLI (optional, for A100 / no queue)
+
+`google-colab-cli` is installed into this repo's tool dir and driven through
+`colab/cl`. The wrapper exists because the CLI writes unconditionally to
+`~/.config/colab-cli` (log, `token.json`, `sessions.json`, history) and reads
+`~/.colab-cli-oauth-config.json`, with no environment override, while `$HOME` is
+read-only here - so every command, including `readme`, died in `os.makedirs`:
+
+    OSError: [Errno 30] Read-only file system: '/home/nikita/.config/colab-cli'
+
+`os.path.expanduser` honours `$HOME`, so the wrapper points `HOME` at `.local/home/`
+(gitignored) and relocates all of it at once. The OAuth client config is bundled in
+the package, so none is needed.
+
+Auth is interactive and needs a browser and your Google account:
+
+```bash
+./colab/cl status      # prints a URL, then asks for the authorization code
+```
+
+Worth it only if Kaggle's GPU queue becomes the bottleneck: `colab/cl new --gpu A100`
+removes the 14.6 GiB ceiling that forces the prefill chunk down to 2048 and costs 64
+forward passes per 128k case.
+
 ## Kaggle-specific gotchas
 
 - **Turn internet on** in the notebook settings, or the corpus download and the

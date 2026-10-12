@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Wrapper for the Colab CLI (google-colab-cli).
+#
+# Why it exists: the CLI writes unconditionally to ~/.config/colab-cli (log file,
+# token.json, sessions.json, history) and reads ~/.colab-cli-oauth-config.json, with
+# no env override for any of them. $HOME is read-only in this sandbox, so every
+# command - even `readme` - dies in os.makedirs before doing any work:
+#
+#     OSError: [Errno 30] Read-only file system: '/home/nikita/.config/colab-cli'
+#
+# os.path.expanduser honours $HOME, so pointing HOME inside the repo relocates all of
+# it at once. .local/ is gitignored, so the OAuth token cannot be committed.
+#
+# Usage: colab/cl <command> [args...]      e.g. colab/cl new --gpu A100
+set -uo pipefail
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export HOME="$REPO/.local/home"
+mkdir -p "$HOME/.config"
+
+# The OAuth callback is on localhost and must not go through a proxy.
+PROXY_FILE="$REPO/.local/proxy"
+if [ -z "${HTTPS_PROXY:-}" ] && [ -s "$PROXY_FILE" ]; then
+  export HTTPS_PROXY="$(tr -d '\r\n' < "$PROXY_FILE")"
+  export HTTP_PROXY="$HTTPS_PROXY"
+fi
+export NO_PROXY="localhost,127.0.0.1,::1${NO_PROXY:+,$NO_PROXY}"
+export no_proxy="$NO_PROXY"
+
+BIN="$REPO/.local/uv-tools/bin/colab"
+if [ ! -x "$BIN" ]; then
+  echo "colab CLI is not installed. Install it into this repo's tool dir:" >&2
+  echo "  UV_CACHE_DIR=$REPO/.local/uv-cache UV_TOOL_DIR=$REPO/.local/uv-tools \\" >&2
+  echo "  UV_TOOL_BIN_DIR=$REPO/.local/uv-tools/bin uv tool install google-colab-cli" >&2
+  exit 1
+fi
+exec "$BIN" "$@"
