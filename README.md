@@ -111,6 +111,30 @@ on Kaggle's two T4s removes both problems if vLLM installs cleanly (see `SETUP.m
 | `yarn_niah.ipynb` | Kaggle/Colab driver |
 | `SETUP.md` | platform specifics, session-splitting plan, install risks |
 
+## First measurement (smoke, n=3 — direction, not an effect size)
+
+Qwen2.5-1.5B-Instruct, Kaggle T4 (sm75), greedy, one needle at three depths:
+
+| arm | 4096 | 131072 |
+|---|---|---|
+| base (shipped config, extrapolating) | 3/3 | **1/3** |
+| yarn (factor 4.0, original_max 32768) | 3/3 | **3/3** |
+
+The only difference between the two rows is `rope_scaling`. The direction is what
+the protocol predicts: `base` is far outside its 32k window at 128k and collapses
+there, YaRN holds. Three samples per cell cannot support a magnitude claim, and the
+4k row shows no short-context penalty either - with n=3 that is an absence of
+evidence, not evidence of absence.
+
+Raw rows and the full environment are in `evidence/smoke_v8_first_measurement.json`.
+
+Running this at all on a 14.6 GiB T4 required three separate memory fixes, each
+measured rather than guessed - see `attention_setup.py` and `SETUP.md`:
+attention must use the memory-efficient kernel with K/V expanded instead of the GQA
+flag (0.76 GiB at 64k vs 7.24 GiB for math at 8k), and the prefill must be chunked
+to 2048 at 131k because the per-chunk mask, not the activations, is what sets the
+bound (32768 x 98304 x 2 = 6.00 GiB was the failing allocation).
+
 ## Validity checklist
 
 - `--load-in-4bit`, `--dtype`, `--attn`, `--prompt-style`, `--enable-thinking` must be **identical across arms**.

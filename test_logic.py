@@ -556,6 +556,69 @@ def test_prefill_chunking() -> None:
     assert attention_setup.auto_prefill_chunk_size(object()) is None
 
 
+def test_log_to_results_parser() -> None:
+    """The log is the only working transport for results, so the parser matters.
+
+    It broke twice in ways a live run exposed: an out-of-scope `args` inside parse(),
+    and case lines being attributed to no arm at all because the arm lives in a
+    separate "== ARM base" marker line rather than in the case line itself.
+    """
+    import json
+    import subprocess
+    import sys
+    import tempfile
+
+    root = os.path.dirname(os.path.abspath(__file__))
+    entries = []
+
+    def emit(text):
+        entries.append({"stream_name": "stdout", "time": 1.0, "data": text + "\n"})
+
+    emit("========================================================================\n== ARM base")
+    emit("    [OK ] L=  4096 d=0.5  san_francisco  exp='eat a sandwich' pred='The best thing to do'")
+    emit("    [MISS] L=131072 d=0.9  berlin         exp='7391' pred='cannot find it'")
+    emit("== ARM yarn")
+    emit("    [OK ] L=131072 d=0.9  berlin         exp='7391' pred='the number is 7391'")
+    # the structured path takes precedence when present
+    emit("NIAH_ROW " + json.dumps({"arm": "yarn", "slug": "wave1a", "length": 8192,
+                                   "depth": 0.1, "needle_key": "berlin",
+                                   "expected": "7391", "correct_word": True}))
+    emit("NIAH_MD | arm | 4k |")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        raw = os.path.join(tmp, "log.json")
+        with open(raw, "w", encoding="utf-8") as fh:
+            json.dump(entries, fh)
+        out = os.path.join(tmp, "out")
+        with open(raw, encoding="utf-8") as fh:
+            r = subprocess.run([sys.executable, os.path.join(root, "tools", "log_to_results.py"),
+                                "--outdir", out], stdin=fh, capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+
+        def rows(name):
+            path = os.path.join(out, name)
+            if not os.path.exists(path):
+                return []
+            return [json.loads(l) for l in open(path, encoding="utf-8") if l.strip()]
+
+        base = rows("base_from_log.jsonl")
+        yarn = rows("yarn_from_log.jsonl")
+        assert len(base) == 2, [r["length"] for r in base]
+        assert {r["length"] for r in base} == {4096, 131072}, base
+        assert all(r["arm"] == "base" for r in base), base
+        assert [r["correct_word"] for r in base] == [True, False], base
+
+        # yarn's case line lands in the arm file ...
+        assert len(yarn) == 1, yarn
+        assert all(r["arm"] == "yarn" for r in yarn), yarn
+        # ... and the structured row keeps its own arm_slug name, which is what makes
+        # resuming exact rather than approximate
+        structured = rows("yarn_wave1a.jsonl")
+        assert len(structured) == 1 and structured[0]["slug"] == "wave1a", structured
+
+        assert os.path.exists(os.path.join(out, "summary_from_log.md")), "NIAH_MD not written"
+
+
 def main() -> None:
     tok = CharTokenizer()
     corpus_ids = tok("The quarterly report mentions ordinary logistics. " * 3000)["input_ids"]
@@ -611,6 +674,7 @@ def main() -> None:
     test_attention_setup()
     test_no_undefined_names()
     test_prefill_chunking()
+    test_log_to_results_parser()
 
     print("ALL LOGIC TESTS PASSED")
 

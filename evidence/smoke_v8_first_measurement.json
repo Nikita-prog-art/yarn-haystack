@@ -1,0 +1,160 @@
+{
+  "what": "First YaRN-vs-native NIAH measurement that completed on a free Kaggle T4.",
+  "kernel": "nikitaprogart/yarn-niah-smoke, version 8",
+  "harness_commit": "63c4fa72d141cab2f92d8faeaf4ce6a8c0aa5c9b",
+  "model": "Qwen/Qwen2.5-1.5B-Instruct",
+  "environment": {
+    "transformers": "5.16.1",
+    "torch": "2.11.0+cu128",
+    "gpu": "Tesla T4 14.6 GiB (sm75)",
+    "python": "3.13"
+  },
+  "protocol": {
+    "lengths": [
+      4096,
+      131072
+    ],
+    "depths": [
+      0.25,
+      0.5,
+      0.75
+    ],
+    "needles": [
+      "san_francisco"
+    ],
+    "decoding": "greedy",
+    "prompt_style": "chat",
+    "dtype": "float16",
+    "only_variable": "rope scaling: base (shipped) vs yarn factor 4.0, original_max_position_embeddings 32768"
+  },
+  "caveat": "Three depths at one length and one needle. This is a smoke test that proves the pipeline and shows the expected direction; it is not a measured effect size. wave1a/wave1b exist for that.",
+  "summary": {
+    "base_4096": "3/3",
+    "base_131072": "1/3",
+    "yarn_4096": "3/3",
+    "yarn_131072": "3/3"
+  },
+  "recovered_from": "kernel log, because `kaggle kernels output` returns no files and results would otherwise be lost with the container",
+  "rows": [
+    {
+      "arm": "base",
+      "length": 4096,
+      "depth": 0.25,
+      "needle_key": "san_francisco",
+      "expected": "eat a sandwich",
+      "prediction": "The best thing to do in San Francisco, according to the given informat",
+      "correct_word": true,
+      "source": "parsed from case line"
+    },
+    {
+      "arm": "base",
+      "length": 4096,
+      "depth": 0.5,
+      "needle_key": "san_francisco",
+      "expected": "eat a sandwich",
+      "prediction": "The best thing to do in San Francisco, according to the given informat",
+      "correct_word": true,
+      "source": "parsed from case line"
+    },
+    {
+      "arm": "base",
+      "length": 4096,
+      "depth": 0.75,
+      "needle_key": "san_francisco",
+      "expected": "eat a sandwich",
+      "prediction": "Based on the information provided, the best thing to do in San Francis",
+      "correct_word": true,
+      "source": "parsed from case line"
+    },
+    {
+      "arm": "base",
+      "length": 131072,
+      "depth": 0.25,
+      "needle_key": "san_francisco",
+      "expected": "eat a sandwich",
+      "prediction": "Based on the information provided, the best thing to do in San Francis",
+      "correct_word": false,
+      "source": "parsed from case line"
+    },
+    {
+      "arm": "base",
+      "length": 131072,
+      "depth": 0.5,
+      "needle_key": "san_francisco",
+      "expected": "eat a sandwich",
+      "prediction": "Based on the information provided, the best thing to do in San Francis",
+      "correct_word": false,
+      "source": "parsed from case line"
+    },
+    {
+      "arm": "base",
+      "length": 131072,
+      "depth": 0.75,
+      "needle_key": "san_francisco",
+      "expected": "eat a sandwich",
+      "prediction": "Based on the information provided, the best thing to do in San Francis",
+      "correct_word": true,
+      "source": "parsed from case line"
+    },
+    {
+      "arm": "yarn",
+      "length": 4096,
+      "depth": 0.25,
+      "needle_key": "san_francisco",
+      "expected": "eat a sandwich",
+      "prediction": "In San Francisco, the best thing to do is eat a sandwich and sit in Do",
+      "correct_word": true,
+      "source": "parsed from case line"
+    },
+    {
+      "arm": "yarn",
+      "length": 4096,
+      "depth": 0.5,
+      "needle_key": "san_francisco",
+      "expected": "eat a sandwich",
+      "prediction": "According to the given information, the best thing to do in San Franci",
+      "correct_word": true,
+      "source": "parsed from case line"
+    },
+    {
+      "arm": "yarn",
+      "length": 4096,
+      "depth": 0.75,
+      "needle_key": "san_francisco",
+      "expected": "eat a sandwich",
+      "prediction": "The best thing to do in San Francisco, according to the given context,",
+      "correct_word": true,
+      "source": "parsed from case line"
+    },
+    {
+      "arm": "yarn",
+      "length": 131072,
+      "depth": 0.25,
+      "needle_key": "san_francisco",
+      "expected": "eat a sandwich",
+      "prediction": "The best thing to do in San Francisco is eat a sandwich and sit in Dol",
+      "correct_word": true,
+      "source": "parsed from case line"
+    },
+    {
+      "arm": "yarn",
+      "length": 131072,
+      "depth": 0.5,
+      "needle_key": "san_francisco",
+      "expected": "eat a sandwich",
+      "prediction": "According to the passage, the best thing to do in San Francisco is eat",
+      "correct_word": true,
+      "source": "parsed from case line"
+    },
+    {
+      "arm": "yarn",
+      "length": 131072,
+      "depth": 0.75,
+      "needle_key": "san_francisco",
+      "expected": "eat a sandwich",
+      "prediction": "According to the information provided, the best thing to do in San Fra",
+      "correct_word": true,
+      "source": "parsed from case line"
+    }
+  ]
+}
