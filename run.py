@@ -48,6 +48,9 @@ def build_parser() -> argparse.ArgumentParser:
     h = p.add_argument_group("runtime")
     h.add_argument("--backend", default="hf", choices=["hf", "vllm"])
     h.add_argument("--attn", default=None, choices=[None, "sdpa", "flash_attention_2", "eager"])
+    h.add_argument("--prefill-chunk-size", type=int, default=None,
+                   help="chunk long prefills to bound activation memory; default is chosen "
+                        "automatically from the model's intermediate_size")
     h.add_argument("--allow-math-sdpa", action="store_true",
                    help="do not refuse long lengths when only the L^2 math attention backend is "
                         "usable, i.e. when the sm<80 K/V-expansion workaround is not in effect")

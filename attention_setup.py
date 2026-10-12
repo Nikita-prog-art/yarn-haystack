@@ -146,3 +146,71 @@ def check_attention_budget(model, lengths: list[int], allow_math: bool = True,
             print(f"[warn] {message}")
         return
     raise SystemExit("Refusing to run: " + message)
+
+def bytes_per_token_activations(config) -> int:
+    """Rough peak activation cost of one token through a transformer layer.
+
+    The dominant terms are the MLP's gate/up projections and their product, each
+    [tokens, intermediate_size] in fp16. For Qwen2.5-1.5B (intermediate 8960) that
+    is ~54 KB per token, so a single 131k prefill allocates ~7 GiB of MLP buffers
+    before the KV cache and weights - which is exactly how the 128k smoke run died
+    inside down_proj rather than inside attention.
+    """
+    inter = (getattr(config, "intermediate_size", None)
+             or getattr(config, "moe_intermediate_size", None) or 0)
+    hidden = getattr(config, "hidden_size", None) or 0
+    if not inter or not hidden:
+        return 0
+    return int(3 * inter * 2 + 2 * hidden * 2)
+
+
+def auto_prefill_chunk_size(config, budget_gib: float = 2.5) -> int | None:
+    """A chunk size that keeps per-layer activations inside `budget_gib`.
+
+    transformers v5 chunks the prefill when `generation_config.prefill_chunk_size`
+    is set, which bounds every intermediate tensor to `chunk` rows instead of the
+    whole context. Returns None when the config does not expose the sizes needed.
+    """
+    per_token = bytes_per_token_activations(config)
+    if not per_token:
+        return None
+    chunk = int(budget_gib * 2 ** 30 / per_token)
+    # Round down to a power of two, and never below a useful minimum.
+    power = 1 << max(9, chunk.bit_length() - 1)
+    return max(512, min(power, 32768))
+
+
+def configure_prefill_chunking(model, requested: int | None, lengths: list[int],
+                               verbose: bool = True) -> int | None:
+    """Bound prefill activations by chunking long contexts.
+
+    Attention was only half the 128k problem. The other half: a single unchunked
+    prefill allocates every intermediate at full length, so for Qwen2.5-1.5B the MLP
+    buffers alone are ~7 GiB and the run dies inside down_proj - after attention has
+    already been fixed, which is what made that failure look like a new problem.
+
+    transformers v5 chunks prefill when `generation_config.prefill_chunk_size` is
+    set. Verified on real 5.16.1 with Qwen2.5-0.5B: identical output chunked and
+    unchunked, so this is a memory change, not a numerics change.
+    """
+    gen_cfg = getattr(model, "generation_config", None)
+    if gen_cfg is None:
+        return None
+    per_token = bytes_per_token_activations(model.config)
+
+    if requested:
+        gen_cfg.prefill_chunk_size = int(requested)
+        if verbose:
+            print(f"[info] prefill_chunk_size={requested} (explicit)")
+        return int(requested)
+
+    longest = max(lengths) if lengths else 0
+    chunk = auto_prefill_chunk_size(model.config)
+    if chunk is None or not longest or chunk >= longest:
+        return None
+    gen_cfg.prefill_chunk_size = chunk
+    if verbose:
+        print(f"[info] prefill_chunk_size={chunk} (auto): longest case {longest} tokens would "
+              f"need ~{longest * per_token / 2 ** 30:.1f} GiB of activations unchunked, "
+              f"~{chunk * per_token / 2 ** 30:.2f} GiB chunked")
+    return chunk

@@ -685,6 +685,9 @@ def run(args) -> None:
         attention_setup.check_attention_budget(
             model, lengths, allow_math=bool(getattr(args, "allow_math_sdpa", False))
         )
+        attention_setup.configure_prefill_chunking(
+            model, getattr(args, "prefill_chunk_size", None), lengths
+        )
 
     for length in lengths:
         cases: list[Case] = []

@@ -516,6 +516,37 @@ def test_no_undefined_names() -> None:
     assert not bad, f"names that would raise NameError at runtime: {bad}"
 
 
+def test_prefill_chunking() -> None:
+    """Unchunked prefill activations are the second half of the 128k problem.
+
+    Attention was fixed first, and the run then died inside down_proj instead: one
+    131k prefill allocates every MLP intermediate at full length. The arithmetic
+    below is what the automatic chunk size is chosen from.
+    """
+    import attention_setup
+
+    class Qwen2_5_1_5B:
+        intermediate_size, hidden_size = 8960, 1536
+
+    class Qwen2_5_7B:
+        intermediate_size, hidden_size = 18944, 3584
+
+    per = attention_setup.bytes_per_token_activations(Qwen2_5_1_5B)
+    assert 50_000 < per < 70_000, per
+    # the number that explains the down_proj OOM
+    assert 131072 * per / 2 ** 30 > 6, 131072 * per / 2 ** 30
+
+    chunk = attention_setup.auto_prefill_chunk_size(Qwen2_5_1_5B)
+    assert chunk, chunk
+    assert chunk * per / 2 ** 30 < 3, (chunk, chunk * per / 2 ** 30)
+    # a bigger model must not get a bigger chunk
+    assert attention_setup.auto_prefill_chunk_size(Qwen2_5_7B) <= chunk
+
+    # configs without the sizes must yield None rather than a bogus number
+    assert attention_setup.bytes_per_token_activations(object()) == 0
+    assert attention_setup.auto_prefill_chunk_size(object()) is None
+
+
 def main() -> None:
     tok = CharTokenizer()
     corpus_ids = tok("The quarterly report mentions ordinary logistics. " * 3000)["input_ids"]
@@ -570,6 +601,7 @@ def main() -> None:
     test_kernel_scripts()
     test_attention_setup()
     test_no_undefined_names()
+    test_prefill_chunking()
 
     print("ALL LOGIC TESTS PASSED")
 
