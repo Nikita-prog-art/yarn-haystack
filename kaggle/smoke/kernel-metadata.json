@@ -1,6 +1,6 @@
 {
   "id": "nikitaprogart/yarn-niah-smoke",
-  "title": "yarn-niah smoke",
+  "title": "yarn-niah-smoke",
   "code_file": "smoke.py",
   "language": "python",
   "kernel_type": "script",

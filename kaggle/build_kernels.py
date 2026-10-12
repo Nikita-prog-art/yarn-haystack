@@ -297,7 +297,10 @@ def build(slug: str, preset: dict, commit: str, user: str, shape: str,
     meta = {
         # Kernel slugs are global per user, so prefix them.
         "id": f"{user}/yarn-niah-{slug}",
-        "title": preset["title"],
+        # Kaggle derives the URL slug from the title when they disagree, and then the
+        # id in this file does not resolve - which is exactly what happened to the
+        # attention probe and to wave1a (yarn-niah-wave1a vs ...-wave1a-short).
+        "title": f"yarn-niah-{slug}",
         "code_file": f"{slug}.py",
         "language": "python",
         "kernel_type": "script",
