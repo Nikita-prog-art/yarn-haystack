@@ -8,6 +8,8 @@ resume bugs that would otherwise cost you a 9-hour Kaggle window.
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import tempfile
 
@@ -84,6 +86,84 @@ def test_thinking_handling() -> None:
     assert had and not niah.score_single(answer, "7391")["correct_word"], "an answer inside a think block must not score"
 
 
+def test_notebook_install_cell() -> None:
+    """Run the notebook's install cell against simulated images.
+
+    Guards the fix for the pip conflict report: matplotlib must never be touched
+    (ydata-profiling pins <=3.10), transformers must be upgraded only when too old,
+    and the cell must hard-fail if it is still too old afterwards.
+    """
+    import importlib.metadata as md
+    import json
+    import subprocess
+    import sys
+    import types
+
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "yarn_niah.ipynb")
+    nb = json.load(open(path, encoding="utf-8"))
+    cell = next(c for c in nb["cells"] if c["cell_type"] == "code" and c["source"][0].startswith("# 2) Install"))
+    src = "\n".join(cell["source"])
+
+    def run_cell(start_env, still_old_after_pip=False):
+        env = dict(start_env)
+        calls = []
+
+        def fake_version(pkg):
+            if pkg in env:
+                return env[pkg]
+            raise md.PackageNotFoundError(pkg)
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            for arg in cmd:
+                if arg.startswith("transformers"):
+                    env["transformers"] = "4.43.0" if still_old_after_pip else "4.52.4"
+                elif arg in ("bitsandbytes", "accelerate", "datasets"):
+                    env[arg] = "9.9.9"
+            return types.SimpleNamespace(returncode=0)
+
+        fake_torch = types.ModuleType("torch")
+        fake_torch.__version__ = env.get("torch", "2.5.1")
+        fake_torch.cuda = types.SimpleNamespace(
+            is_available=lambda: True, device_count=lambda: 2,
+            get_device_properties=lambda i: types.SimpleNamespace(name="T4", total_memory=16 * 2**30),
+        )
+        saved = (md.version, subprocess.run, sys.modules.get("torch"))
+        md.version, subprocess.run, sys.modules["torch"] = fake_version, fake_run, fake_torch
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                exec(compile(src, "<install cell>", "exec"), {"__name__": "__main__"})
+        finally:
+            md.version, subprocess.run = saved[0], saved[1]
+            if saved[2] is None:
+                sys.modules.pop("torch", None)
+            else:
+                sys.modules["torch"] = saved[2]
+        requested = [a for c in calls for a in c if not a.startswith("-") and a != sys.executable]
+        return requested
+
+    kaggle = {"transformers": "4.43.0", "matplotlib": "3.8.4", "accelerate": "1.1.1",
+              "datasets": "3.1.0", "numpy": "1.26.4", "torch": "2.5.1"}
+    req = run_cell(kaggle)
+    assert "transformers>=4.51" in req, req
+    assert "bitsandbytes" in req, req
+    assert not any(p.startswith("matplotlib") for p in req), f"matplotlib must not be touched: {req}"
+    assert not any(p.split(">=")[0].strip() in ("accelerate", "datasets") for p in req), req
+
+    modern = dict(kaggle, transformers="4.52.4", bitsandbytes="0.44.1")
+    assert run_cell(modern) == [], f"nothing should be installed on a modern image: {run_cell(modern)}"
+
+    # If pip reports success but transformers is still too old, the cell must refuse
+    # to continue rather than run a YaRN arm that is secretly the control arm.
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            run_cell(kaggle, still_old_after_pip=True)
+    except AssertionError as exc:
+        assert "4.51" in str(exc), exc
+    else:
+        raise AssertionError("install cell did not hard-fail on transformers<4.51")
+
+
 def main() -> None:
     tok = CharTokenizer()
     corpus_ids = tok("The quarterly report mentions ordinary logistics. " * 3000)["input_ids"]
@@ -133,6 +213,7 @@ def main() -> None:
 
     test_sanity_guards()
     test_thinking_handling()
+    test_notebook_install_cell()
 
     print("ALL LOGIC TESTS PASSED")
 

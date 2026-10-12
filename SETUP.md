@@ -31,10 +31,48 @@ Sync out at the end of each session with `--upload <user>/yarn-niah` (needs
 
 ## Install
 
+The notebook installs selectively rather than with a blanket `pip install -U`,
+and you should do the same by hand:
+
 ```bash
 # Kaggle/Colab already ship a CUDA-matched torch. Do not reinstall it.
-pip install -q -U "transformers>=4.43" accelerate datasets bitsandbytes matplotlib
+# Only transformers has a real version floor.
+pip install -q -U "transformers>=4.51"
+# then, only if missing:
+pip install -q accelerate datasets bitsandbytes
 ```
+
+### pip prints dependency conflicts — ignore them
+
+After any install, pip re-checks the *whole* environment and reports every
+conflict it finds, including pre-existing ones from the image. On Kaggle you will
+typically see:
+
+```
+ERROR: pip's dependency resolver does not currently take into account all the packages that are installed.
+bigframes 2.48.0 requires google-cloud-bigquery-storage<3.0.0,>=2.30.0, which is not installed.
+ydata-profiling 4.18.4 requires matplotlib<=3.10,>=3.5, but you have matplotlib 3.11.2 which is incompatible.
+```
+
+This header says `ERROR`, but the install succeeded. Both lines are harmless here:
+
+- **bigframes** is Google's BigQuery DataFrame client, preinstalled in the Kaggle
+  image with a missing transitive dependency. It existed before you ran anything;
+  pip merely noticed it. The harness never imports it.
+- **ydata-profiling** is Kaggle's EDA helper. It was fine until we asked for
+  `-U matplotlib`. The fix is to not upgrade matplotlib at all — `analyze.py`
+  uses only `subplots` / `imshow` / `colorbar` / `tight_layout` / `savefig`,
+  which have been stable for a decade, so whatever the image ships is fine.
+
+Neither package is imported anywhere in this repo, so neither can affect a score.
+Check it instead of trusting it — this returns nothing:
+
+```bash
+grep -rn "import bigframes\|import ydata\|from bigframes\|from ydata" --include="*.py" .
+```
+
+Kaggle and Colab also scope `pip install` to the current session — a new session
+starts from the pristine image, so this report disappears on its own.
 
 `bitsandbytes` is only needed for `--load-in-4bit`. NF4 works on T4 (sm75).
 

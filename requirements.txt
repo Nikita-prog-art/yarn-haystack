@@ -1,11 +1,20 @@
 # Core deps. Kaggle/Colab already ship a CUDA-matched torch — do NOT reinstall it.
-# >=4.51 is required for Qwen3: older versions silently ignore
-# original_max_position_embeddings inside rope_scaling.
+#
+# Install selectively, not with a blanket `pip install -U`: the images already
+# ship matplotlib, datasets and accelerate, and upgrading them provokes conflicts
+# with preinstalled tools (ydata-profiling pins matplotlib<=3.10) for no benefit.
+# The notebook's install cell does the selective install. pip's
+# dependency-conflict report at the end is a warning, not a failed install.
+#
+# This one is a hard requirement: below 4.51, transformers silently ignores
+# original_max_position_embeddings inside rope_scaling, so the YaRN arm becomes a
+# copy of the control arm and the experiment measures nothing.
 transformers>=4.51
 accelerate
 datasets
 bitsandbytes          # only needed for --load-in-4bit on a 16GB T4
-matplotlib
+matplotlib            # no version floor: analyze.py uses only subplots/imshow/
+                      # colorbar/tight_layout/savefig, stable for many years
 numpy
 huggingface_hub
 # optional, big win at long context but a fragile install:
