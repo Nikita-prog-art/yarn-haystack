@@ -164,6 +164,87 @@ def test_notebook_install_cell() -> None:
         raise AssertionError("install cell did not hard-fail on transformers<4.51")
 
 
+def test_placement() -> None:
+    """Model placement: the bug where fp16 weights stayed on CPU and died in LayerNorm."""
+    cases = [
+        # (load_in_4bit, device_map, dtype, cuda, expected device, expected dtype, why)
+        (False, None, "float16", True, "cuda", "float16", "the ordinary GPU path"),
+        (False, None, "float16", False, "cpu", "float32", "no GPU: fp32, not a LayerNorm crash"),
+        (False, None, "bfloat16", False, "cpu", "float32", "no GPU: fp32"),
+        (False, None, "float32", False, "cpu", "float32", "no GPU, fp32 as asked"),
+        (False, "auto", "float16", True, None, "float16", "accelerate places it, do not move it"),
+        (True, None, "float16", True, None, "float16", "4-bit implies device_map=auto"),
+    ]
+    for li4, dm, dtype, cuda, want_dev, want_dtype, why in cases:
+        dev, eff, _note = niah.resolve_placement(li4, dm, dtype, cuda)
+        assert (dev, eff) == (want_dev, want_dtype), f"{why}: got {(dev, eff)}, want {(want_dev, want_dtype)}"
+    # We must never claim a device for the accelerate-managed paths, or we would
+    # move a sharded model onto one GPU.
+    assert niah.resolve_placement(True, None, "float16", True)[0] is None
+    assert niah.resolve_placement(False, "auto", "float16", True)[0] is None
+
+
+def test_notebook_runner_cell() -> None:
+    """The notebook runner must stream output AND put the child's error in the exception.
+
+    Regression guard: subprocess.run(..., check=True) raises a bare
+    CalledProcessError that hides the real error, which is the only thing you need.
+    """
+    import json
+
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "yarn_niah.ipynb")
+    nb = json.load(open(path, encoding="utf-8"))
+    cell = next(c for c in nb["cells"] if c["cell_type"] == "code"
+                and c["source"] and c["source"][0].startswith("import subprocess, sys, os"))
+    src = "\n".join(cell["source"])
+    src = src[: src.index("\n# ")]  # drop the cell's own niah(...) invocation
+    # Drop the cell's `import subprocess` too: it would rebind the name and defeat
+    # the fake below (which is how this test first failed, by running run.py for real).
+    src = "\n".join(ln for ln in src.split("\n") if not ln.startswith("import subprocess"))
+
+    seen = {}
+
+    class FakeProc:
+        def __init__(self, cmd, **kw):
+            seen["cmd"] = cmd
+            self.returncode = 1
+            self.stdout = iter(["starting\n", "RuntimeError: the actual reason\n"])
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def wait(self):
+            return self.returncode
+
+    class FakeSubprocess:
+        PIPE, STDOUT = -1, -2
+
+        @staticmethod
+        def Popen(cmd, **kw):
+            return FakeProc(cmd, **kw)
+
+    import collections, sys
+    ns = {"WORK": "/tmp/x", "subprocess": FakeSubprocess,
+          "sys": sys, "os": os, "collections": collections}
+    with contextlib.redirect_stdout(io.StringIO()):
+        exec(compile(src, "<runner>", "exec"), ns)
+        try:
+            ns["niah"]("--model", "m")
+        except RuntimeError as exc:
+            msg = str(exc)
+        else:
+            raise AssertionError("runner did not raise on a non-zero exit")
+
+    assert "exited with 1" in msg, msg
+    assert "the actual reason" in msg, f"the child's error is not in the exception: {msg}"
+    # -u: without it the child's stdout is block-buffered through the pipe and a
+    # long 128k run looks frozen.
+    assert "-u" in seen["cmd"], f"child must run unbuffered: {seen['cmd']}"
+
+
 def main() -> None:
     tok = CharTokenizer()
     corpus_ids = tok("The quarterly report mentions ordinary logistics. " * 3000)["input_ids"]
@@ -214,6 +295,8 @@ def main() -> None:
     test_sanity_guards()
     test_thinking_handling()
     test_notebook_install_cell()
+    test_placement()
+    test_notebook_runner_cell()
 
     print("ALL LOGIC TESTS PASSED")
 

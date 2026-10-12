@@ -169,6 +169,43 @@ So on Colab's single T4, Qwen3-8B reaches 64k, not 128k. Kaggle's 2×T4 with
 Recommended order: get a number with Qwen2.5-7B first, then repeat with Qwen3-8B
 on Kaggle to show the result is not a Qwen2.5 quirk.
 
+## Troubleshooting the smoke test
+
+`run.py` failing inside the notebook used to surface as a bare
+`CalledProcessError: ... returned non-zero exit status 1`, which tells you
+nothing. The runner cell now streams the child's output live and, on failure,
+puts its **last 40 lines into the exception**, so the actual error is right
+there. If you still only see the exit code, run the command by hand:
+
+```bash
+python -u run.py --model Qwen/Qwen2.5-1.5B-Instruct --arm yarn --factor 4 \
+  --original-max 32768 --lengths 4096 --depths 0.5 --max-new-tokens 24 \
+  --out results/smoke.jsonl
+```
+
+The two causes that have nothing to do with the harness:
+
+1. **No internet.** Off by default in Kaggle notebooks, and both the tokenizer
+   and the corpus download need it. Symptom: dies within a second with
+   `Could not load a corpus ... or enable internet and pip install datasets`, or a
+   connection error from `AutoTokenizer`. Fix: notebook settings → Internet → On.
+   The preflight cell checks this before anything heavy starts.
+2. **No CUDA / fp16 on CPU.** Half-precision on CPU dies in kernels such as
+   `LayerNormKernelImpl not implemented for 'Half'`. `resolve_placement()` now
+   warns and switches to float32 on CPU, so a CPU session runs instead of
+   crashing — but a CPU run is a correctness check only, never a timing or memory
+   measurement. Check the logged line:
+
+   ```
+   [info] device=cuda dtype=float16
+   ```
+
+   If it says `device=cpu`, you are on the wrong accelerator and every number
+   below 32k will take forever and mean little.
+
+Both are checked up front by the notebook's `PREFLIGHT` cell. Run it before the
+smoke test whenever a session misbehaves.
+
 ## Kaggle-specific gotchas
 
 - **Turn internet on** in the notebook settings, or the corpus download and the

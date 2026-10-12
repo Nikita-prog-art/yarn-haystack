@@ -403,6 +403,32 @@ def sanity_check(args, cfg) -> None:
         )
 
 
+def resolve_placement(load_in_4bit: bool, device_map: str | None, dtype_name: str, cuda_available: bool) -> tuple[str | None, str, str | None]:
+    """Decide where the model runs and in what precision.
+
+    Returns (device_to_move_to_or_None, effective_dtype_name, note).
+
+    Passing `device_map` (or 4-bit, which implies `device_map="auto"`) hands
+    placement to accelerate, so we must not move the model ourselves.
+
+    Without either, `from_pretrained` silently leaves the weights on CPU. With a
+    half precision dtype that dies in CPU kernels (`LayerNormKernelImpl not
+    implemented for 'Half'`), which is an obscure way to find out you forgot to
+    move the model. CPU also cannot run this benchmark at any useful speed, so
+    fall back to fp32 and say so.
+    """
+    if load_in_4bit or device_map:
+        return None, dtype_name, None
+    if not cuda_available:
+        if dtype_name in ("float16", "bfloat16"):
+            return "cpu", "float32", (
+                f"no CUDA available: using float32 on CPU instead of {dtype_name}. "
+                "This is a correctness check, not a timing or memory measurement."
+            )
+        return "cpu", dtype_name, "no CUDA available: running on CPU."
+    return "cuda", dtype_name, None
+
+
 def load_model_and_tokenizer(args):
     import torch
     from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
@@ -429,10 +455,18 @@ def load_model_and_tokenizer(args):
         print(f"[warn] disabling sliding_window={cfg.sliding_window} for a fair NIAH comparison")
         cfg.use_sliding_window = False
 
-    kwargs: dict[str, Any] = {"config": cfg, "torch_dtype": getattr(torch, args.dtype)}
+    device, dtype_name, note = resolve_placement(
+        args.load_in_4bit, args.device_map, args.dtype, torch.cuda.is_available()
+    )
+    if note:
+        print(f"[warn] {note}")
+
+    kwargs: dict[str, Any] = {"config": cfg, "torch_dtype": getattr(torch, dtype_name)}
     if args.attn:
         kwargs["attn_implementation"] = args.attn
     if args.load_in_4bit:
+        if not torch.cuda.is_available():
+            raise SystemExit("--load-in-4bit needs a CUDA device; bitsandbytes has no CPU fallback here.")
         from transformers import BitsAndBytesConfig
 
         kwargs["quantization_config"] = BitsAndBytesConfig(
@@ -450,6 +484,11 @@ def load_model_and_tokenizer(args):
 
     model = AutoModelForCausalLM.from_pretrained(args.model, **kwargs)
     model.eval()
+    if device is not None:
+        # Without this the model stays on CPU while we feed it CUDA-shaped hopes.
+        model = model.to(device)
+    where = device if device is not None else f"device_map={args.device_map or 'auto'}"
+    print(f"[info] device={where} dtype={dtype_name}")
 
     applied = getattr(model.config, "rope_scaling", None)
     print(f"[info] arm={args.arm} rope_scaling={applied} rope_theta={getattr(model.config, 'rope_theta', None)} "
