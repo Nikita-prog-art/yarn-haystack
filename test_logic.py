@@ -395,6 +395,61 @@ def test_kernel_scripts() -> None:
             assert flag in src, f"{slug}: missing {flag}"
 
 
+def test_sdpa_backends() -> None:
+    """The math backend must be off by default, and flash only where it exists.
+
+    Math is what OOMs at 128k on a T4 (sm75): it materialises the full attention
+    matrix, and the resulting message blames a 16 GiB allocation rather than the
+    kernel choice.
+    """
+    import sys
+    import types
+
+    def run(capability, allow_math):
+        calls = {}
+
+        class FakeCuda:
+            @staticmethod
+            def is_available():
+                return True
+
+            @staticmethod
+            def get_device_capability():
+                return capability
+
+        fake = types.ModuleType("torch")
+        fake.cuda = FakeCuda()
+        fake.backends = types.SimpleNamespace(cuda=types.SimpleNamespace(
+            enable_flash_sdp=lambda on: calls.__setitem__("flash", on),
+            enable_mem_efficient_sdp=lambda on: calls.__setitem__("mem_efficient", on),
+            enable_math_sdp=lambda on: calls.__setitem__("math", on),
+        ))
+        saved = sys.modules.get("torch")
+        sys.modules["torch"] = fake
+        try:
+            enabled = niah.configure_sdpa(allow_math)
+        finally:
+            if saved is None:
+                sys.modules.pop("torch", None)
+            else:
+                sys.modules["torch"] = saved
+        return calls, enabled
+
+    # T4, the default: memory-efficient only
+    calls, enabled = run((7, 5), False)
+    assert calls == {"flash": False, "mem_efficient": True, "math": False}, calls
+    assert enabled == ["mem_efficient"], enabled
+
+    # Ampere and up can also use flash
+    calls, enabled = run((8, 0), False)
+    assert calls["flash"] is True and calls["math"] is False, calls
+    assert enabled == ["flash", "mem_efficient"], enabled
+
+    # opt-in escape hatch, for inputs the efficient kernel cannot handle
+    calls, _ = run((7, 5), True)
+    assert calls["math"] is True, calls
+
+
 def main() -> None:
     tok = CharTokenizer()
     corpus_ids = tok("The quarterly report mentions ordinary logistics. " * 3000)["input_ids"]
@@ -447,6 +502,7 @@ def main() -> None:
     test_notebooks_are_not_glued()
     test_rope_scaling_shapes()
     test_kernel_scripts()
+    test_sdpa_backends()
 
     print("ALL LOGIC TESTS PASSED")
 

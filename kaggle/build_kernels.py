@@ -91,9 +91,25 @@ EXTRA = @@EXTRA_REPR@@
 MAX_NEW_TOKENS = @@MNT@@
 SLUG = "@@SLUG@@"
 
-# HF caches to $HOME/.cache by default, which is cramped on Kaggle and shared with
-# everything else. Keep it on the working volume.
-os.environ.setdefault("HF_HOME", os.path.join(WORK, "hf"))
+def scratch_dir():
+    """A writable, roomy directory that is NOT part of the kernel's output.
+
+    Putting HF_HOME under /kaggle/working made `kernels output` fetch the entire
+    model and dataset cache - hundreds of megabytes per pull, for data we already
+    have. /kaggle/temp is scratch and stays out of the output.
+    """
+    for candidate in ("/kaggle/temp", "/tmp"):
+        try:
+            os.makedirs(candidate, exist_ok=True)
+            return candidate
+        except OSError:
+            continue
+    return os.path.join(WORK, "scratch")
+
+
+os.environ.setdefault("HF_HOME", os.path.join(scratch_dir(), "hf"))
+# Long-context prefill fragments the allocator; the OOM message itself suggests this.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 
 def sh(cmd, check=True):
