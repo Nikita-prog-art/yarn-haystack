@@ -494,6 +494,44 @@ def resolve_placement(load_in_4bit: bool, device_map: str | None, dtype_name: st
     return "cuda", dtype_name, None
 
 
+def dtype_kwargs(dtype_name: str) -> dict:
+    """Pick the right spelling of the load dtype for this transformers version.
+
+    v5 renamed `torch_dtype` to `dtype`. The dangerous part is that passing the
+    wrong one is not necessarily an error: `from_pretrained` forwards unknown
+    keywords into the config, so the model would quietly load in its checkpoint
+    dtype instead. For a memory-bound run that invalidates the whole placement
+    plan, and on a T4 it also changes the speed. Hence: choose by version, then
+    assert the result (see assert_loaded_dtype) rather than trust the argument.
+    """
+    import torch
+    import transformers
+
+    try:
+        major = int(str(transformers.__version__).split(".")[0])
+    except (ValueError, IndexError):
+        major = 5
+    key = "dtype" if major >= 5 else "torch_dtype"
+    return {key: getattr(torch, dtype_name)}
+
+
+def assert_loaded_dtype(model, dtype_name: str) -> None:
+    """Raise if the weights did not come out in the precision we asked for.
+
+    Skipped for quantised loads, where parameters are NF4/uint8 and the compute
+    dtype is a separate concept.
+    """
+    import torch
+
+    want = getattr(torch, dtype_name)
+    got = next(model.parameters()).dtype
+    if got != want:
+        raise RuntimeError(
+            f"model loaded in {got}, not the requested {want}: the dtype keyword was "
+            "silently ignored. The memory plan and the timing would both be wrong."
+        )
+
+
 def report_device_map(model, where: str, allow_cpu: bool = False) -> dict:
     """Refuse to measure a model that accelerate silently offloaded to CPU or disk.
 
@@ -557,7 +595,7 @@ def load_model_and_tokenizer(args):
     if note:
         print(f"[warn] {note}")
 
-    kwargs: dict[str, Any] = {"config": cfg, "torch_dtype": getattr(torch, dtype_name)}
+    kwargs: dict[str, Any] = {"config": cfg, **dtype_kwargs(dtype_name)}
     if args.attn:
         kwargs["attn_implementation"] = args.attn
     if args.load_in_4bit:
@@ -580,6 +618,10 @@ def load_model_and_tokenizer(args):
 
     model = AutoModelForCausalLM.from_pretrained(args.model, **kwargs)
     model.eval()
+    if not args.load_in_4bit:
+        # Verify rather than trust the keyword we just passed; v4/v5 disagree on its
+        # name and the wrong one can be swallowed instead of rejected.
+        assert_loaded_dtype(model, dtype_name)
     if device is not None:
         # Without this the model stays on CPU while we feed it CUDA-shaped hopes.
         model = model.to(device)

@@ -674,6 +674,62 @@ def test_device_map_offload_guard() -> None:
     assert niah.report_device_map(Fake(bad), "device_map=auto", allow_cpu=True) == bad
 
 
+def test_dtype_kwarg_spelling() -> None:
+    """v4 and v5 disagree on the dtype keyword, and the wrong one can be swallowed.
+
+    `from_pretrained` takes **kwargs, so an unknown dtype keyword is not reliably an
+    error - it can land in the config while the weights load in the checkpoint
+    dtype. On a memory-bound run that silently invalidates the placement plan, and on
+    a T4 it changes the speed too. Hence the version check plus the post-load assert.
+    Verified as a negative case: a stub claiming 4.x must yield torch_dtype, and one
+    claiming 5.x must yield dtype - so a hardcoded choice fails the test.
+    """
+    import sys
+    import types
+
+    fake_torch = types.ModuleType("torch")
+    fake_torch.float16 = "F16"
+    fake_torch.float32 = "F32"
+
+    saved = {n: sys.modules.get(n) for n in ("torch", "transformers")}
+
+    class P:
+        def __init__(self, dt):
+            self.dtype = dt
+
+    class M:
+        def __init__(self, dt):
+            self._dt = dt
+
+        def parameters(self):
+            return iter([P(self._dt)])
+
+    try:
+        sys.modules["torch"] = fake_torch
+        for version, key in (("5.16.1", "dtype"), ("4.51.0", "torch_dtype")):
+            tf = types.ModuleType("transformers")
+            tf.__version__ = version
+            sys.modules["transformers"] = tf
+            got = niah.dtype_kwargs("float16")
+            assert list(got) == [key], (version, got)
+            assert got[key] == "F16", got
+
+        # the post-load check catches the silent-ignore case
+        niah.assert_loaded_dtype(M("F16"), "float16")
+        try:
+            niah.assert_loaded_dtype(M("F32"), "float16")
+        except RuntimeError as exc:
+            assert "silently ignored" in str(exc), exc
+        else:
+            raise AssertionError("a model loaded in float32 passed as float16")
+    finally:
+        for name, mod in saved.items():
+            if mod is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = mod
+
+
 def main() -> None:
     tok = CharTokenizer()
     corpus_ids = tok("The quarterly report mentions ordinary logistics. " * 3000)["input_ids"]
@@ -731,6 +787,7 @@ def main() -> None:
     test_prefill_chunking()
     test_log_to_results_parser()
     test_device_map_offload_guard()
+    test_dtype_kwarg_spelling()
 
     print("ALL LOGIC TESTS PASSED")
 
