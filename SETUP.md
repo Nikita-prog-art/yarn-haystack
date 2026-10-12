@@ -226,9 +226,30 @@ Auth is interactive and needs a browser and your Google account:
 ./colab/cl status      # prints a URL, then asks for the authorization code
 ```
 
-Worth it only if Kaggle's GPU queue becomes the bottleneck: `colab/cl new --gpu A100`
-removes the 14.6 GiB ceiling that forces the prefill chunk down to 2048 and costs 64
-forward passes per 128k case.
+### Measured: Colab free is not a way around the memory ceiling
+
+Probed on a live free-tier session (`colab/cl exec`):
+
+| | Kaggle | Colab free |
+|---|---|---|
+| GPU | Tesla T4, 14.56 GiB, sm75 | Tesla T4, **14.56 GiB**, sm75 |
+| torch | 2.11.0+cu128 | 2.11.0+**cu130** |
+| transformers | 5.16.1 | **5.18.0** |
+| disk free | ~20 GiB | 70 GiB |
+| compute units | n/a | **0.00** |
+
+So the same 14.56 GiB ceiling applies, and the 2048-token prefill chunk is needed
+either way. A100/L4/H100 exist as `--gpu` variants but need compute units, of which
+this account has none. My earlier note here claimed Colab would remove the ceiling;
+that was wrong, and the probe is why it is now written down.
+
+vLLM fails on both platforms, for different reasons - `libcudart.so.13` missing on
+Kaggle (CUDA 12.8), and on Colab `TypeError: Config() got an unexpected keyword
+argument 'deprecated'` against transformers 5.18. Fixing the second means pinning a
+transformers that vLLM accepts, which is a separate experiment, not a quick win.
+
+Colab's remaining advantage is the absence of a GPU queue; its disadvantage is a
+daily quota and shorter sessions.
 
 ## Kaggle-specific gotchas
 
