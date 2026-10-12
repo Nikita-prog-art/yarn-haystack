@@ -494,6 +494,38 @@ def resolve_placement(load_in_4bit: bool, device_map: str | None, dtype_name: st
     return "cuda", dtype_name, None
 
 
+def report_device_map(model, where: str, allow_cpu: bool = False) -> dict:
+    """Refuse to measure a model that accelerate silently offloaded to CPU or disk.
+
+    `device_map="auto"` does not fail when the weights do not fit: it spills the
+    remainder to CPU RAM (or disk) and the run proceeds. Slowly, but it produces
+    numbers that look exactly like a result. That is the same failure mode as the
+    glued notebook cells - plausible output from a run that measured the wrong
+    thing - so an offload is a hard error here, not a warning.
+
+    Returns the map so callers can log or compare it across arms. An ablation is
+    only valid if both arms were placed identically, so the map is worth printing.
+    """
+    dmap = dict(getattr(model, "hf_device_map", None) or {})
+    if not dmap:
+        return {}
+    devices = sorted({str(v) for v in dmap.values()})
+    print(f"[info] hf_device_map: {len(dmap)} modules across {devices}")
+    offloaded = {k: v for k, v in dmap.items() if str(v) in ("cpu", "disk")}
+    if offloaded:
+        sample = list(offloaded.items())[:5]
+        msg = (
+            f"device_map offloaded {len(offloaded)} module(s) to CPU/disk (e.g. {sample}). "
+            "This would run, look fine, and be meaningless: lower --lengths, keep "
+            "--load-in-4bit, or free a GPU."
+        )
+        if allow_cpu:
+            print(f"[warn] {msg}")
+        else:
+            raise RuntimeError(msg)
+    return dmap
+
+
 def load_model_and_tokenizer(args):
     import torch
     from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
@@ -553,6 +585,7 @@ def load_model_and_tokenizer(args):
         model = model.to(device)
     where = device if device is not None else f"device_map={args.device_map or 'auto'}"
     print(f"[info] device={where} dtype={dtype_name}")
+    report_device_map(model, where)
     # On sm<80 the GQA flag forces the math backend, which OOMs at long context;
     # this picks usable kernels and, where needed, expands K/V instead. See
     # attention_setup's docstring for the measured numbers.

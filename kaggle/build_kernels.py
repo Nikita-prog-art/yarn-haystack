@@ -56,6 +56,19 @@ PRESETS = {
         "why": "7B far past its window: 3 depths only, because 128k prefill dominates and "
                "a kernel that times out returns nothing.",
     },
+    "wave1c": {
+        "title": "yarn-niah wave1c fp16 dual gpu",
+        "model": "Qwen/Qwen2.5-7B-Instruct",
+        "lengths": "65536,131072",
+        "depths": "0.1,0.5,0.9",
+        "extra": ["--device-map", "auto", "--attn", "sdpa"],
+        "max_new_tokens": 64,
+        "why": "Same grid as wave1b, but fp16 across BOTH T4s instead of NF4 on one, so the "
+               "headline result cannot be a quantisation artefact. 7B fp16 at 128k needs "
+               "14.2 GiB of weights + 7.0 GiB of KV = 21.2 GiB, which fits in 29.1 GiB of "
+               "combined HBM and does not fit in one 14.56 GiB card. niah.report_device_map "
+               "raises if accelerate quietly spills a layer to CPU instead.",
+    },
 }
 
 # @@TOKENS@@ rather than .format(): the body is full of f-strings and dict literals,
@@ -232,7 +245,13 @@ def main():
 
     # 5. Report. analyze.py copes with a partial run, so this is worth doing even if
     #    an arm was cut short: you get the heatmap for whatever finished.
-    found = sorted(glob.glob(os.path.join(results, "*.jsonl")))
+    #    Only THIS run's files: restored files from earlier waves cover a different
+    #    grid (different lengths, different dtype), and merging them would draw a
+    #    heatmap whose cells come from two different experiments.
+    this_run = sorted(glob.glob(os.path.join(results, "*_{}.jsonl".format(SLUG))))
+    found = this_run or sorted(glob.glob(os.path.join(results, "*.jsonl")))
+    if not this_run:
+        print("\\nnote: no *_%s.jsonl produced; falling back to every result file" % SLUG)
     print("\\nresult files:", found)
     if not found:
         raise SystemExit("no results were produced - read the output above")

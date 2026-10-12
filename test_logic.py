@@ -633,6 +633,47 @@ def test_log_to_results_parser() -> None:
         assert os.path.exists(os.path.join(out, "summary_from_log.md")), "NIAH_MD not written"
 
 
+def test_device_map_offload_guard() -> None:
+    """accelerate spills to CPU instead of failing, which is a silent wrong answer.
+
+    `device_map="auto"` is how the 7B fp16 run is meant to reach both T4s, and the
+    whole point of that run is memory. If the weights do not fit, accelerate does
+    not raise: it puts the remainder on CPU and the run proceeds slowly, producing
+    numbers indistinguishable from a real measurement. So it must raise here.
+    """
+    class Fake:
+        def __init__(self, dmap):
+            if dmap is not None:
+                self.hf_device_map = dmap
+
+    # no map at all (the plain .to(device) path) - nothing to check, nothing to say
+    assert niah.report_device_map(Fake(None), "cuda") == {}
+
+    # a healthy split across both T4s
+    ok = {"model.embed_tokens": 0, "model.layers.0": 0, "model.layers.27": 1, "lm_head": 1}
+    assert niah.report_device_map(Fake(ok), "device_map=auto") == ok
+
+    # the failure this exists for: one layer landed on CPU
+    bad = {"model.layers.0": 0, "model.layers.27": "cpu"}
+    try:
+        niah.report_device_map(Fake(bad), "device_map=auto")
+    except RuntimeError as exc:
+        assert "offloaded" in str(exc), exc
+    else:
+        raise AssertionError("a CPU-offloaded layer was accepted - the run would look fine and be meaningless")
+
+    # disk offload is the same class of bug
+    try:
+        niah.report_device_map(Fake({"lm_head": "disk"}), "device_map=auto")
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("disk offload accepted")
+
+    # explicit opt-out still reports, for a deliberate CPU correctness check
+    assert niah.report_device_map(Fake(bad), "device_map=auto", allow_cpu=True) == bad
+
+
 def main() -> None:
     tok = CharTokenizer()
     corpus_ids = tok("The quarterly report mentions ordinary logistics. " * 3000)["input_ids"]
@@ -689,6 +730,7 @@ def main() -> None:
     test_no_undefined_names()
     test_prefill_chunking()
     test_log_to_results_parser()
+    test_device_map_offload_guard()
 
     print("ALL LOGIC TESTS PASSED")
 
