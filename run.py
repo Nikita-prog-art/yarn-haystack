@@ -49,8 +49,8 @@ def build_parser() -> argparse.ArgumentParser:
     h.add_argument("--backend", default="hf", choices=["hf", "vllm"])
     h.add_argument("--attn", default=None, choices=[None, "sdpa", "flash_attention_2", "eager"])
     h.add_argument("--allow-math-sdpa", action="store_true",
-                   help="permit SDPA's math backend, which materialises the full attention matrix "
-                        "and therefore OOMs at long context on sm75 (T4)")
+                   help="do not refuse long lengths when only the L^2 math attention backend is "
+                        "usable, i.e. when the sm<80 K/V-expansion workaround is not in effect")
     h.add_argument("--dtype", default="float16", choices=["float16", "bfloat16", "float32"])
     h.add_argument("--load-in-4bit", action="store_true", help="NF4; needed for 7B @128k on a 16GB T4. Use the SAME flag for every arm.")
     h.add_argument("--device-map", default=None, help="e.g. auto; use 'auto' to shard across Kaggle's 2xT4")

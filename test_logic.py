@@ -395,59 +395,72 @@ def test_kernel_scripts() -> None:
             assert flag in src, f"{slug}: missing {flag}"
 
 
-def test_sdpa_backends() -> None:
-    """The math backend must be off by default, and flash only where it exists.
+def test_attention_setup() -> None:
+    """On sm<80 the GQA flag is unusable, so expanding K/V must be forced.
 
-    Math is what OOMs at 128k on a T4 (sm75): it materialises the full attention
-    matrix, and the resulting message blames a 16 GiB allocation rather than the
-    kernel choice.
+    Measured on a real T4 by kaggle/_probe_attn: mem_efficient + enable_gqa raised
+    "RuntimeError: Invalid backend", while mem_efficient without the flag peaked at
+    0.10 GiB @8k and 0.76 GiB @64k - against 7.24 GiB for the math backend at just
+    8k. That difference is the whole reason 128k is possible on a free T4.
     """
     import sys
     import types
 
-    def run(capability, allow_math):
-        calls = {}
+    import attention_setup
 
-        class FakeCuda:
-            @staticmethod
-            def is_available():
-                return True
+    assert attention_setup.should_force_repeat_kv((7, 5)) is True
+    assert attention_setup.should_force_repeat_kv((8, 0)) is False
+    assert attention_setup.should_force_repeat_kv(None) is False
 
-            @staticmethod
-            def get_device_capability():
-                return capability
+    # the arithmetic behind the budget guard
+    assert abs(attention_setup.attention_budget_gib(12, 8192) - 1.5) < 0.01
+    assert attention_setup.attention_budget_gib(12, 131072) > 300
 
-        fake = types.ModuleType("torch")
-        fake.cuda = FakeCuda()
-        fake.backends = types.SimpleNamespace(cuda=types.SimpleNamespace(
-            enable_flash_sdp=lambda on: calls.__setitem__("flash", on),
-            enable_mem_efficient_sdp=lambda on: calls.__setitem__("mem_efficient", on),
-            enable_math_sdp=lambda on: calls.__setitem__("math", on),
-        ))
-        saved = sys.modules.get("torch")
-        sys.modules["torch"] = fake
-        try:
-            enabled = niah.configure_sdpa(allow_math)
-        finally:
-            if saved is None:
-                sys.modules.pop("torch", None)
+    enabled_calls = {}
+
+    class FakeCuda:
+        @staticmethod
+        def is_available():
+            return True
+
+        @staticmethod
+        def get_device_capability():
+            return (7, 5)
+
+    fake_torch = types.ModuleType("torch")
+    fake_torch.cuda = FakeCuda()
+    fake_torch.backends = types.SimpleNamespace(cuda=types.SimpleNamespace(
+        enable_flash_sdp=lambda on: enabled_calls.__setitem__("flash", on),
+        enable_mem_efficient_sdp=lambda on: enabled_calls.__setitem__("mem_efficient", on),
+        enable_math_sdp=lambda on: enabled_calls.__setitem__("math", on),
+    ))
+    sdpa_mod = types.ModuleType("transformers.integrations.sdpa_attention")
+    sdpa_mod.use_gqa_in_sdpa = lambda *a, **k: True      # as transformers ships it
+    tr = types.ModuleType("transformers")
+    tr.integrations = types.ModuleType("transformers.integrations")
+
+    names = ("torch", "transformers", "transformers.integrations", "transformers.integrations.sdpa_attention")
+    saved = {n: sys.modules.get(n) for n in names}
+    saved_patched = attention_setup._PATCHED
+    # attention_setup imports torch lazily, so injecting it into sys.modules is
+    # enough for the call to pick up the fake.
+    sys.modules.update({"torch": fake_torch, "transformers": tr,
+                        "transformers.integrations": tr.integrations,
+                        "transformers.integrations.sdpa_attention": sdpa_mod})
+    try:
+        info = attention_setup.configure_attention(allow_math=True, verbose=False)
+    finally:
+        attention_setup._PATCHED = saved_patched
+        for name, mod in saved.items():
+            if mod is None:
+                sys.modules.pop(name, None)
             else:
-                sys.modules["torch"] = saved
-        return calls, enabled
+                sys.modules[name] = mod
 
-    # T4, the default: memory-efficient only
-    calls, enabled = run((7, 5), False)
-    assert calls == {"flash": False, "mem_efficient": True, "math": False}, calls
-    assert enabled == ["mem_efficient"], enabled
-
-    # Ampere and up can also use flash
-    calls, enabled = run((8, 0), False)
-    assert calls["flash"] is True and calls["math"] is False, calls
-    assert enabled == ["flash", "mem_efficient"], enabled
-
-    # opt-in escape hatch, for inputs the efficient kernel cannot handle
-    calls, _ = run((7, 5), True)
-    assert calls["math"] is True, calls
+    assert info["forced_repeat_kv"] is True, info
+    assert info["enabled"] == ["mem_efficient", "math"], info
+    assert enabled_calls == {"flash": False, "mem_efficient": True, "math": True}, enabled_calls
+    assert sdpa_mod.use_gqa_in_sdpa(None, None, None) is False, "the GQA flag was not disabled"
 
 
 def main() -> None:
@@ -502,7 +515,7 @@ def main() -> None:
     test_notebooks_are_not_glued()
     test_rope_scaling_shapes()
     test_kernel_scripts()
-    test_sdpa_backends()
+    test_attention_setup()
 
     print("ALL LOGIC TESTS PASSED")
 

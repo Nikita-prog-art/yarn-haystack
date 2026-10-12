@@ -458,29 +458,6 @@ def tf_version() -> str:
         return "?"
 
 
-def configure_sdpa(allow_math: bool = False) -> list[str]:
-    """Restrict SDPA to kernels that do not materialise the full attention matrix.
-
-    A T4 is sm75 and flash attention needs sm80+, so torch's SDPA silently falls back
-    to the math backend, which materialises [heads, q_len, kv_len]. At 128k that is
-    hundreds of GiB, and the failure reads "Tried to allocate 16.00 GiB" - which
-    points at memory rather than at the kernel choice. The memory-efficient kernel
-    supports sm50+ and is the reason this benchmark is runnable on a free T4.
-
-    Returns the enabled backends, for the log line.
-    """
-    import torch
-    if not torch.cuda.is_available():
-        return ["cpu"]
-    major, _minor = torch.cuda.get_device_capability()
-    flash = major >= 8
-    torch.backends.cuda.enable_flash_sdp(flash)
-    torch.backends.cuda.enable_mem_efficient_sdp(True)
-    torch.backends.cuda.enable_math_sdp(bool(allow_math))
-    return [name for name, on in (("flash", flash), ("mem_efficient", True),
-                                  ("math", bool(allow_math))) if on]
-
-
 def resolve_placement(load_in_4bit: bool, device_map: str | None, dtype_name: str, cuda_available: bool) -> tuple[str | None, str, str | None]:
     """Decide where the model runs and in what precision.
 
@@ -566,9 +543,12 @@ def load_model_and_tokenizer(args):
         model = model.to(device)
     where = device if device is not None else f"device_map={args.device_map or 'auto'}"
     print(f"[info] device={where} dtype={dtype_name}")
-    # Without this, 128k on a T4 dies allocating the full attention matrix.
-    backends = configure_sdpa(getattr(args, "allow_math_sdpa", False))
-    print(f"[info] sdpa backends enabled: {backends}")
+    # On sm<80 the GQA flag forces the math backend, which OOMs at long context;
+    # this picks usable kernels and, where needed, expands K/V instead. See
+    # attention_setup's docstring for the measured numbers.
+    import attention_setup
+
+    attention_setup.configure_attention(allow_math=True, verbose=True)
 
     applied = getattr(model.config, "rope_scaling", None)
     print(f"[info] transformers={tf_version()} ({fam}) arm={args.arm} rope={applied} "
@@ -698,6 +678,13 @@ def run(args) -> None:
     lengths = [int(x) for x in args.lengths.split(",") if x.strip()]
     depths = [float(x) for x in args.depths.split(",") if x.strip()]
     needles = NEEDLE_POOL[: args.n_needles]
+
+    if args.backend != "vllm":
+        # Refuse (or loudly warn about) lengths that cannot fit, before downloading
+        # anything or burning a GPU session on a guaranteed OOM.
+        attention_setup.check_attention_budget(
+            model, lengths, allow_math=bool(getattr(args, "allow_math_sdpa", False))
+        )
 
     for length in lengths:
         cases: list[Case] = []
